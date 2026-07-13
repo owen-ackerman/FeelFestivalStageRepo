@@ -1,0 +1,17 @@
+# Large 3D assets and stage design files — not meant for git
+Stage3DFiles/
+
+# Large 3D mesh formats anywhere in the repo (RibbonSimulation etc.)
+*.fbx
+*.obj
+*.mtl
+*.3dm
+
+# TouchDesigner autosave backup increments
+**/Backup/
+
+# TouchDesigner import cache
+**/TDImportCache/
+
+# Local Claude Code tool config (machine-specific, not project source)
+.claude/settings.local.json
