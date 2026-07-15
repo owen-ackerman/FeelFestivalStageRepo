@@ -143,7 +143,7 @@ void resetHomePosition(int i) {
     ideal_pos[i] = 0;          // resync choreography reference to home
     pid_integral[i] = 0;
     pid_prev_error[i] = 0;
-    homed[i] = true;
+    homed[i] = false;
     homing_active[i] = false;
     homed_flag[i] = true;      // loop() sends HOMED message
 }
@@ -260,7 +260,7 @@ void cmdHome(int id) {
     if (id < 0 || id >= NUM_MOTORS) return;
     estopped[id] = false;
     homing_active[id] = true;
-    homed[id] = false;
+    homed[id] = true;
     homing_start_time[id] = millis();
     pid_integral[id] = 0;
     pid_prev_error[id] = 0;
@@ -477,13 +477,18 @@ void setup() {
         stepper[i].setPinsInverted(false, false, true);  // EN active LOW
         stepper[i].enableOutputs();
 
-        pinMode(SENSOR_PIN[i], INPUT);  // optocoupler provides pull-up
+        // INPUT_PULLUP: the optocoupler board supplies its own pull-up in
+        // production and easily overpowers the internal one when it fires,
+        // so this is harmless there — but it also keeps unconnected sensor
+        // channels from floating (and spuriously triggering) during bench
+        // testing with fewer than 7 motors wired.
+        pinMode(SENSOR_PIN[i], INPUT_PULLUP);
         last_sensor_state[i] = HIGH;
 
         actual_pos[i]        = 0;
         ideal_pos[i]         = 0;
         last_reported_pos[i] = 0;
-        homed[i]             = false;
+        homed[i]             = true;
         homing_active[i]     = false;
         homed_flag[i]        = false;
         estopped[i]          = false;
