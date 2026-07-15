@@ -68,14 +68,14 @@ float motor_kd[NUM_MOTORS];
 // Pin assignments
 // ---------------------------------------------------------------------------
 
-const int STEP_PIN[NUM_MOTORS] = {2, 4, 6, 8, 10, 12, 24};
-const int DIR_PIN[NUM_MOTORS]  = {3, 5, 7, 9, 11, 13, 25};
-const int EN_PIN[NUM_MOTORS]   = {26, 27, 28, 29, 30, 31, 32};
+const int STEP_PIN[NUM_MOTORS] = {30, 33, 36, 39, 42, 45, 48};
+const int DIR_PIN[NUM_MOTORS]  = {31, 34, 37, 40, 43, 46, 49};
+const int EN_PIN[NUM_MOTORS]   = {32, 35, 38, 41, 44, 47, 50};
 
 // Motors 0-3 sit on hardware-interrupt pins (18,19,20,21) and are handled by
 // ISRs below. Motors 4-6 (22,23,33) are not interrupt-capable on the Mega
 // and are polled in loop() via pollSensors().
-const int SENSOR_PIN[NUM_MOTORS] = {18, 19, 20, 21, 22, 23, 33};
+const int SENSOR_PIN[NUM_MOTORS] = {22, 23, 24, 25, 26, 27, 28};
 
 // ---------------------------------------------------------------------------
 // State
@@ -391,8 +391,14 @@ void handleCommand(String &line) {
 
     } else if (strcmp(cmd, "STATUS") == 0) {
         cmdRequestStatus();
+
+    } else {
+        // Echo back rather than silently dropping — this is the only signal
+        // that a line arrived at all, which matters when diagnosing serial
+        // terminal issues (wrong line ending, case mismatch, etc).
+        Serial.print("ERR unknown command: ");
+        Serial.println(cmd);
     }
-    // Unknown commands are silently ignored.
 }
 
 void parseSerial() {
@@ -503,7 +509,7 @@ void setup() {
 void loop() {
     // 1. Run PID for each motor — updates stepper target
     for (int i = 0; i < NUM_MOTORS; i++) {
-        runPID(i);
+        //runPID(i);
     }
 
     // 2. Execute stepper motion (must run every loop, never blocked)
