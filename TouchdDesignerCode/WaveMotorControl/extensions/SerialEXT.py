@@ -15,9 +15,10 @@ Child operator:
     rather than a hardcoded name, since base_serial_left/base_serial_right
     both use this same extension class.
 
-Wiring: the Serial DAT's line-mode output feeds a 'serial_callback' DAT
-Execute (watching for new rows) whose onRowChange() calls
-onSerialReceive(dat, rowIndex) once per newly arrived line.
+Wiring: the Serial DAT's own 'Callbacks DAT' parameter (not a separate DAT
+Execute watching row changes) points at a small Text DAT — see
+dats/serial_callback.py — whose onReceive(dat, rowIndex, message) calls
+onSerialReceive(dat, rowIndex, message) once per received line.
 
 Protocol (see motor_control_implementation_spec.md, Part 4) uses LOCAL motor
 ids (0-6) on the wire. This class converts to/from the GLOBAL ids (0-13)
@@ -54,17 +55,14 @@ class SerialEXT:
 
     # -- receive ---------------------------------------------------------
 
-    def onSerialReceive(self, dat, rowIndex, cellIndex=None, prev=None):
+    def onSerialReceive(self, dat, rowIndex, message):
         """
-        Called once per newly-arrived line (by the serial_callback DAT
-        Execute watching this COMP's Serial DAT in Line mode). Extracts the
-        line text from the row and dispatches it.
+        Called once per received line, via the Serial DAT's own Callbacks
+        DAT (dats/serial_callback.py) forwarding its onReceive(dat,
+        rowIndex, message). 'message' is the raw line text — the Serial
+        DAT itself supplies it, no need to re-read the row.
         """
-        try:
-            line = dat[rowIndex, 0].val
-        except Exception:
-            return
-        self.ParseLine(line)
+        self.ParseLine(message)
 
     def ParseLine(self, line):
         """
