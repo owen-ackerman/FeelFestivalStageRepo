@@ -27,12 +27,25 @@ directly from what each extension actually reads via `.par.X` — parameter
 what `.par.X` in the code looks up (the Label next to it is just display
 text and can be anything).
 
+**`SerialEXT` and `SerialRelayEXT` are alternatives, not both-required.**
+They fill the same role (transport for one Mega side) — attach ONE of them
+per COMP, never both, and only set up the parameters for whichever one is
+actually attached:
+- `SerialEXT` = local Serial DAT, laptop plugged directly into a Mega, no
+  network. Use ONLY if bypassing the mini PC entirely for a bench test.
+- `SerialRelayEXT` = TCP to the mini PC bridge. **This is what the real
+  show rig uses** — if you're sending data to the mini PC, this is the one
+  that should be attached to `base_serial_left`/`base_serial_right`, and
+  `Serialport`/`Baudrate` are irrelevant noise you don't need to set (baud
+  rate still matters, just not to TD — it's the `BAUD_RATE` constant in
+  `mega_serial_bridge.py` on the mini PC that actually opens the COM port).
+
 | COMP | Extension | Parameter | Type | Default |
 |---|---|---|---|---|
-| wherever `SerialEXT` is attached (local bench-test transport) | `SerialEXT` | `Serialport` | Str | e.g. `'COM3'` |
+| wherever `SerialEXT` is attached — **only if bypassing the mini PC entirely** | `SerialEXT` | `Serialport` | Str | e.g. `'COM3'` |
 | | | `Baudrate` | Int | `115200` |
 | | | `Motoroffset` | Int | `0` |
-| `base_serial_left` | `SerialRelayEXT` | `Serverhost` | Str | mini PC IP |
+| `base_serial_left` — **the real show rig uses this one** | `SerialRelayEXT` | `Serverhost` | Str | mini PC IP |
 | | | `Serverport` | Int | `9000` |
 | | | `Motoroffset` | Int | `0` |
 | `base_serial_right` | `SerialRelayEXT` | `Serverhost` | Str | mini PC IP |
