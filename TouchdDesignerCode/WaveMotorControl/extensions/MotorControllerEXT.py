@@ -48,12 +48,19 @@ class MotorControllerEXT:
     # -- routing -------------------------------------------------------
 
     def GetSerialEXT(self, motor_id):
-        """Route command to correct Mega based on motor_id."""
+        """
+        Route command to correct Mega based on motor_id.
+
+        Uses comp.extensions[0] rather than a hardcoded .ext.SerialEXT so
+        this works whether base_serial_left/right is running SerialEXT
+        (local Serial DAT — direct bench testing) or SerialRelayEXT (TCP to
+        the mini PC bridge — full show rig). Both expose the same public
+        interface via SerialProtocolBase, so callers here don't need to
+        know which one is attached.
+        """
         parent = self.ownerComp.parent()
-        if motor_id < 7:
-            return parent.op('base_serial_left').ext.SerialEXT
-        else:
-            return parent.op('base_serial_right').ext.SerialEXT
+        comp_name = 'base_serial_left' if motor_id < 7 else 'base_serial_right'
+        return parent.op(comp_name).extensions[0]
 
     # -- position streaming ---------------------------------------------
 
