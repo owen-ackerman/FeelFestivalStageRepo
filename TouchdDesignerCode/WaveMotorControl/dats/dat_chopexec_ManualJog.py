@@ -4,7 +4,12 @@ SETPOS target, for bench-testing a single motor by hand (Slider, LFO, or
 Constant CHOP feeding a target step count).
 
 Setup in TD:
-  1. Create a CHOP Execute DAT (e.g. 'chopexec_manual_jog').
+  1. Create a CHOP Execute DAT (e.g. 'chopexec_manual_jog') directly inside
+     base_motor_system, as a SIBLING of base_motor_controller — not nested
+     inside base_motor_controller or any other COMP. This file uses the
+     relative lookup op('base_motor_controller'), which resolves relative
+     to this script's own parent, so base_motor_controller must be a
+     sibling for that lookup to find it.
   2. Set its 'CHOP' parameter to the CHOP driving the test (one channel —
      if the CHOP has multiple channels, only the first is used below).
   3. Set its 'Callbacks DAT' parameter to this file.
