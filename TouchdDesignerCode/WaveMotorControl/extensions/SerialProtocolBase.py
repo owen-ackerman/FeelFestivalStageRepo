@@ -11,9 +11,12 @@ actually reach a Mega. Two concrete subclasses provide the transport:
                     on the backstage mini PC. Use for the full show rig,
                     where TD runs on a separate main PC from the Megas.
 
-Both live in the same 'extensions' folder and reference this class via
-mod('SerialProtocolBase').SerialProtocolBase — this file must be a sibling
-Text DAT of both for that relative path to resolve.
+Both reference this class via
+mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
+-- i.e. this file must be a child of the GRANDPARENT of whichever COMP
+owns SerialEXT/SerialRelayEXT (their COMP's parent), not a direct sibling
+of the SerialEXT/SerialRelayEXT Text DAT itself. Match your actual network
+layout on both sides.
 
 Subclasses must implement _send(command) and call self.ParseLine(message)
 whenever a complete line arrives from their transport.

@@ -29,7 +29,7 @@ dats/serial_callback.py — whose onReceive(dat, rowIndex, message) calls
 onSerialReceive(dat, rowIndex, message) once per received line.
 """
 
-SerialProtocolBase = mod('SerialProtocolBase').SerialProtocolBase
+SerialProtocolBase = mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
 
 
 class SerialEXT(SerialProtocolBase):
