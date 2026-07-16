@@ -1,4 +1,4 @@
-"""
+﻿"""
 SerialProtocolBase — transport-agnostic motor command protocol.
 
 Holds everything about the wire protocol (motor id translation, command

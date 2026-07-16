@@ -1,4 +1,4 @@
-"""
+﻿"""
 SerialRelayEXT — networked transport for one Arduino Mega, via the mini PC
 bridge (MiniPCBridge/mega_serial_bridge.py) over a plain TCP socket.
 
@@ -38,7 +38,7 @@ _tcpDat()/_send() accordingly; see also the caveat in dats/tcp_callback.py
 for the receive side.
 """
 
-SerialProtocolBase = mod('SerialProtocolBase').SerialProtocolBase
+SerialProtocolBase = mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
 
 
 class SerialRelayEXT(SerialProtocolBase):

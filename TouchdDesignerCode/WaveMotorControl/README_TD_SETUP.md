@@ -19,6 +19,48 @@ you're ready to wire those up.
 
 ---
 
+## Custom parameters reference
+
+Quick lookup for every COMP that needs a Custom parameter page, pulled
+directly from what each extension actually reads via `.par.X` — parameter
+**Name** fields are case-sensitive and must match exactly, since that's
+what `.par.X` in the code looks up (the Label next to it is just display
+text and can be anything).
+
+| COMP | Extension | Parameter | Type | Default |
+|---|---|---|---|---|
+| wherever `SerialEXT` is attached (local bench-test transport) | `SerialEXT` | `Serialport` | Str | e.g. `'COM3'` |
+| | | `Baudrate` | Int | `115200` |
+| | | `Motoroffset` | Int | `0` |
+| `base_serial_left` | `SerialRelayEXT` | `Serverhost` | Str | mini PC IP |
+| | | `Serverport` | Int | `9000` |
+| | | `Motoroffset` | Int | `0` |
+| `base_serial_right` | `SerialRelayEXT` | `Serverhost` | Str | mini PC IP |
+| | | `Serverport` | Int | `9001` |
+| | | `Motoroffset` | Int | `7` |
+| `base_motor_controller` | `MotorControllerEXT` | `Autorehomedrift` | Int | `200` |
+| | | `Pid_kp` | Float | `0.8` |
+| | | `Pid_ki` | Float | `0.01` |
+| | | `Pid_kd` | Float | `0.1` |
+| `base_choreography` | `ChoreographyEXT` | `Waveamplitude` | Int | `800` |
+| | | `Wavefrequency` | Float | `0.2` |
+| | | `Wavephaseoffset` | Float | `0.4` |
+| | | `Wavemode` | Menu | items exactly `SINE`, `TRIANGLE`, `CUSTOM` (case-sensitive — code does exact string comparison) — default `SINE` |
+| | | `Playback` | Toggle | off |
+| | | `Activecue` | Int | `0` |
+
+**`OSCHandlerEXT` needs none of its own** — it never reads
+`self.ownerComp.par.anything`; it only reads/writes other COMPs'
+parameters (e.g. `base_choreography`'s `Waveamplitude`) by looking them
+up. Its COMP just needs the extension attached, no custom page. (The OSC
+In DAT itself has its own built-in parameters — Port, Active, etc. — but
+those are the operator's native parameters, not a custom page.)
+
+`PIDTuningEXT` and `base_visualization` aren't written yet, so no
+parameter list for those until they're built.
+
+---
+
 ## 0. Prerequisites
 
 - `mega_serial_bridge.py` running on the mini PC, both sides showing
