@@ -25,7 +25,10 @@ Quick lookup for every COMP that needs a Custom parameter page, pulled
 directly from what each extension actually reads via `.par.X` — parameter
 **Name** fields are case-sensitive and must match exactly, since that's
 what `.par.X` in the code looks up (the Label next to it is just display
-text and can be anything).
+text and can be anything). Also note: **TD's custom parameter Name field
+doesn't allow underscores** — where a name below has one (`Pid_kp` etc.),
+strip it (`Pidkp`) when creating the actual parameter; the Label can still
+say whatever you want, e.g. "Pid Kp".
 
 **`SerialEXT` and `SerialRelayEXT` are alternatives, not both-required.**
 They fill the same role (transport for one Mega side) — attach ONE of them
@@ -52,9 +55,9 @@ actually attached:
 | | | `Serverport` | Int | `9001` |
 | | | `Motoroffset` | Int | `7` |
 | `base_motor_controller` | `MotorControllerEXT` | `Autorehomedrift` | Int | `200` |
-| | | `Pid_kp` | Float | `0.8` |
-| | | `Pid_ki` | Float | `0.01` |
-| | | `Pid_kd` | Float | `0.1` |
+| | | `Pidkp` | Float | `0.8` |
+| | | `Pidki` | Float | `0.01` |
+| | | `Pidkd` | Float | `0.1` |
 | `base_choreography` | `ChoreographyEXT` | `Waveamplitude` | Int | `800` |
 | | | `Wavefrequency` | Float | `0.2` |
 | | | `Wavephaseoffset` | Float | `0.4` |
@@ -147,9 +150,9 @@ Fastest way: select `base_serial_left`, copy/paste it, rename the copy to
    | Name | Type | Default |
    |---|---|---|
    | `Autorehomedrift` | Int | `200` |
-   | `Pid_kp` | Float | `0.8` |
-   | `Pid_ki` | Float | `0.01` |
-   | `Pid_kd` | Float | `0.1` |
+   | `Pidkp` | Float | `0.8` |
+   | `Pidki` | Float | `0.01` |
+   | `Pidkd` | Float | `0.1` |
 4. Dive inside, add two **Table DAT**s: `motor_state_table` and
    `event_log`. Leave both empty — the code populates them at runtime.
 

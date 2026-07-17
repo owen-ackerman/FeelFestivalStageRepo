@@ -12,9 +12,12 @@ the full operator tree).
 
 Custom parameters on the owning COMP:
     Autorehomedrift   int    default 200   — steps of drift that triggers a TD-side re-home
-    Pid_kp            float  default 0.8   — display mirror of the last Kp sent via SETPID
-    Pid_ki            float  default 0.01  — display mirror of the last Ki sent via SETPID
-    Pid_kd            float  default 0.1   — display mirror of the last Kd sent via SETPID
+    Pidkp             float  default 0.8   — display mirror of the last Kp sent via SETPID
+    Pidki             float  default 0.01  — display mirror of the last Ki sent via SETPID
+    Pidkd             float  default 0.1   — display mirror of the last Kd sent via SETPID
+    (TD's custom parameter Name field doesn't allow underscores -- these are
+    Pidkp/Pidki/Pidkd, not Pid_kp/Pid_ki/Pid_kd; give them whatever Label
+    you like in the UI, e.g. "Pid Kp", the Name is what code reads)
 
 Child operator (optional but recommended):
     motor_state_table   Table DAT — 15 rows (header + 14 motors), rebuilt by
@@ -167,7 +170,7 @@ class MotorControllerEXT:
     def SetPIDGains(self, kp, ki, kd, motor_id=None):
         """
         Send SETPID to both Megas (or one motor's Mega if motor_id given).
-        Stores last-sent values on the Pid_kp/ki/kd custom parameters so the
+        Stores last-sent values on the Pidkp/Pidki/Pidkd custom parameters so the
         TD panel can display them — those parameters ARE the display mirror,
         not the control source (the Arduino's actual gains only change when
         it receives a SETPID command).
@@ -178,18 +181,18 @@ class MotorControllerEXT:
         else:
             self.GetSerialEXT(motor_id).SendSetPID(kp, ki, kd, motor_id)
 
-        self.ownerComp.par.Pid_kp = kp
-        self.ownerComp.par.Pid_ki = ki
-        self.ownerComp.par.Pid_kd = kd
+        self.ownerComp.par.Pidkp = kp
+        self.ownerComp.par.Pidki = ki
+        self.ownerComp.par.Pidkd = kd
         target = motor_id if motor_id is not None else 'all'
         self.LogEvent(f"SETPID sent: Kp={kp} Ki={ki} Kd={kd} [motor={target}]")
 
     def GetPIDGains(self):
         """Return (kp, ki, kd) currently stored — for panel display."""
         return (
-            self.ownerComp.par.Pid_kp.eval(),
-            self.ownerComp.par.Pid_ki.eval(),
-            self.ownerComp.par.Pid_kd.eval(),
+            self.ownerComp.par.Pidkp.eval(),
+            self.ownerComp.par.Pidki.eval(),
+            self.ownerComp.par.Pidkd.eval(),
         )
 
     def ResetPIDState(self, motor_id=None):
