@@ -28,14 +28,12 @@ Child operator:
     A TCP/IP DAT (client mode) somewhere under the owning COMP, found by
     type. Its 'Callbacks DAT' parameter should point at dats/tcp_callback.py.
 
-CAVEAT: I don't have a live TD environment to confirm the exact TCP/IP DAT
-Python API (parameter names, send method, callback signature) the way
-Serial DAT's was verified earlier in this project — the parameter names
-and send() call below are my best-effort match to TD's documented API, not
-tested against a running instance. If Connect()/_send() errors out, check
-the TCP/IP DAT's own parameter names in your TD version and adjust
-_tcpDat()/_send() accordingly; see also the caveat in dats/tcp_callback.py
-for the receive side.
+CONFIRMED LIVE (2026-07-17): Connect()/_send() now verified against a
+running instance — dat.par.address (not netaddress), dat.par.port,
+dat.par.active, and dat.send(text) (not sendText) are all correct as
+written. Mode must be set to Client on the TCP/IP DAT itself (not a code
+concern, a DAT parameter to check by hand). Still unverified: the receive
+side — see the caveat in dats/tcp_callback.py.
 """
 
 SerialProtocolBase = mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
@@ -86,4 +84,4 @@ class SerialRelayEXT(SerialProtocolBase):
         if dat is None:
             debug(f"[{self.ownerComp.name}] Cannot send '{command}' — no TCP/IP DAT child found")
             return
-        dat.sendText(command + '\n')
+        dat.send(command + '\n')
