@@ -127,6 +127,7 @@ class MegaBridge:
                     line = ser.readline()  # blocks up to `timeout` seconds
                     if not line:
                         continue  # just a read timeout, keep looping
+                    self.log.info(f"SERIAL -> TCP: {line!r}")
                     self._forwardToClient(line)
             except (serial.SerialException, OSError) as e:
                 self.log.warning(f"Serial link to {self.serial_port_name} dropped ({e}) -- reopening")
@@ -143,9 +144,11 @@ class MegaBridge:
         with self._client_lock:
             sock = self._client_sock
         if sock is None:
+            self.log.info("SERIAL -> TCP: dropped, no client connected")
             return  # no main PC connected right now -- drop it (monitoring only)
         try:
             sock.sendall(line_bytes)
+            self.log.info("SERIAL -> TCP: sent OK")
         except OSError as e:
             self.log.warning(f"Failed sending to TCP client ({e}) -- dropping connection")
             self._closeClient()
@@ -193,6 +196,7 @@ class MegaBridge:
             buffer += chunk
             while b'\n' in buffer:
                 line, buffer = buffer.split(b'\n', 1)
+                self.log.info(f"TCP -> SERIAL: {line!r}")
                 self._forwardToSerial(line + b'\n')
 
         self.log.info("Main PC disconnected")
@@ -206,6 +210,8 @@ class MegaBridge:
             return
         try:
             ser.write(line_bytes)
+            ser.flush()
+            self.log.info(f"TCP -> SERIAL: wrote {len(line_bytes)} bytes OK")
         except (serial.SerialException, OSError) as e:
             self.log.warning(f"Failed writing to {self.serial_port_name} ({e})")
 
