@@ -176,6 +176,27 @@ void pollSensors() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TEMPORARY DIAGNOSTIC: sensor 0 raw monitor, no ISR, no homing logic.
+// Pins 22+ have no hardware interrupt on the Mega 2560 (only 2,3,18,19,20,21
+// do) -- sensor_isr_0 attached to SENSOR_PIN[0]=22 almost certainly never
+// fires. This bypasses that entirely: pure digitalRead() polling, reporting
+// only on change, so the raw hardware signal can be observed directly by
+// hand-triggering the switch. Motor 0 will NOT complete homing while this
+// is active -- resetHomePosition(0) is never called from here on purpose,
+// this is for observing the sensor only.
+// ---------------------------------------------------------------------------
+bool sensor0_diag_last_state = HIGH;
+
+void monitorSensor0() {
+    bool state = digitalRead(SENSOR_PIN[0]);
+    if (state != sensor0_diag_last_state) {
+        Serial.print("SENSOR0 ");
+        Serial.println(state == LOW ? "LOW (triggered)" : "HIGH (released)");
+        sensor0_diag_last_state = state;
+    }
+}
+
 void checkHomedFlags() {
     for (int i = 0; i < NUM_MOTORS; i++) {
         if (homed_flag[i]) {
@@ -502,7 +523,10 @@ void setup() {
     }
 
     // Hardware interrupts: motors 0-3
-    attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[0]), sensor_isr_0, FALLING);
+    // Sensor 0 DISABLED for diagnostics -- see monitorSensor0(). Also, on
+    // Mega 2560 this would only ever work if SENSOR_PIN[0] were one of
+    // 2/3/18/19/20/21; it currently is not (see note above monitorSensor0).
+    // attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[0]), sensor_isr_0, FALLING);
     attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[1]), sensor_isr_1, FALLING);
     attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[2]), sensor_isr_2, FALLING);
     attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[3]), sensor_isr_3, FALLING);
@@ -530,8 +554,9 @@ void loop() {
     // 3. Handle homed flags set by ISRs/poll
     checkHomedFlags();
 
-    // 4. Poll sensors for motors 4-6
+    // 4. Poll sensors for motors 4-6, plus the sensor 0 diagnostic monitor
     pollSensors();
+    monitorSensor0();
 
     // 5. Check homing timeouts
     checkHomingTimeouts();
