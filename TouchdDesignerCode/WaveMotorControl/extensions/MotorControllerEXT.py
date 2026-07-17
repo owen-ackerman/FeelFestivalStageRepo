@@ -148,10 +148,27 @@ class MotorControllerEXT:
         self.LogEvent(f"HOME sent for motor {motor_id}")
 
     def StopAll(self):
-        """Emergency stop — STOPALL to both Megas."""
+        """
+        Emergency stop — STOPALL to both Megas.
+
+        Also pauses ChoreographyEXT first. Without this, if a wave cue is
+        still playing, the very next frame's Update() would push a new
+        SETPOS -- and the firmware's estop latch is deliberately cleared by
+        any new SETPOS (that's meant for a human re-issuing a command after
+        investigating a stop, not an automated loop that has no idea a stop
+        just happened). Silencing the source, not just the symptom, is what
+        makes this an actual emergency stop rather than a stop-for-one-frame.
+        """
+        self._pauseChoreography()
         self.GetSerialEXT(0).SendStopAll()
         self.GetSerialEXT(7).SendStopAll()
         self.LogEvent("STOPALL sent to both Megas — emergency stop")
+
+    def _pauseChoreography(self):
+        choreo = self.ownerComp.parent().op('base_choreography')
+        if choreo is None:
+            return
+        choreo.par.Playback = 0
 
     def EnableAll(self):
         """Enable all driver outputs. Protocol has no bulk ENABLEALL, so this sends per-motor."""

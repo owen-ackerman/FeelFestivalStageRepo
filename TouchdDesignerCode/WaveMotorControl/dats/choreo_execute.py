@@ -20,9 +20,8 @@ one explicit call is the entire bridge between the two.
 
 
 def onFrameStart(frame):
-    op('ChoreographyEXT').Update()
-    return
-
+	parent().ext.ChoreographyEXT.Update()
+	return
 
 def onStart():
     return

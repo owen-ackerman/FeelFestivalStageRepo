@@ -182,8 +182,8 @@ From TD's **Textport** (Alt+T, or Dialogs → Textport):
 
 ```python
 # Connect both sides to the mini PC
-op('base_serial_left').ext.SerialRelayEXT.Connect()
-op('base_serial_right').ext.SerialRelayEXT.Connect()
+op('/project1/base_serial_left').ext.SerialRelayEXT.Connect()
+op('/project1/base_serial_right').ext.SerialRelayEXT.Connect()
 ```
 
 Check the textport for `[base_serial_left] Mega READY` / same for right —
@@ -194,7 +194,7 @@ prompt handled.
 
 ```python
 # Home everything
-op('base_motor_controller').ext.MotorControllerEXT.HomeAll()
+op('/project1/base_motor_controller').ext.MotorControllerEXT.HomeAll()
 ```
 
 Watch `motor_state_table` (or textport `HOMED <id>` lines) until all
@@ -203,10 +203,10 @@ connected motors show homed. Then:
 ```python
 # Start conservative -- lower amplitude than the WAVE_SLOW default for a
 # first pass with everything connected at once
-op('base_choreography').par.Waveamplitude = 200
+op('/project1/base_choreography').par.Waveamplitude = 200
 
-op('base_choreography').par.Playback = 1
-op('base_choreography').ext.ChoreographyEXT.GoCueByName('WAVE_SLOW')
+op('/project1/base_choreography').par.Playback = 1
+op('/project1/base_choreography').ext.ChoreographyEXT.GoCueByName('WAVE_SLOW')
 ```
 
 Emergency stop, any time:

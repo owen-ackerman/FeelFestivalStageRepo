@@ -47,6 +47,11 @@
 // Below it, PID takes over for fine correction. See runPID().
 #define CHOREO_ERROR_THRESHOLD 50
 
+// Steps per full revolution -- must match microstepping config. Used only
+// for continuous-rotation (speed_mode) drift resync against the reference
+// sensor; position-mode motion doesn't need this at all.
+#define STEPS_PER_REV 1600
+
 // ---------------------------------------------------------------------------
 // PID gains — per-motor, initialised from these defaults in setup().
 // Can be updated at runtime via SETPID (global or per-motor) without
@@ -90,6 +95,20 @@ unsigned long homing_start_time[NUM_MOTORS];
 // for that motor. While set, runPID() will not resume motion — otherwise an
 // "immediate" stop would only last until the next loop iteration.
 bool estopped[NUM_MOTORS];
+
+// True while a motor is in continuous-speed mode (SETSPEED) rather than
+// position mode (SETPOS/PID). Mutually exclusive with position control --
+// cleared by SETPOS/HOME, set by SETSPEED. No absolute target while true;
+// the motor just spins at commanded_speed[i] via runSpeed() until told
+// otherwise.
+bool speed_mode[NUM_MOTORS];
+long commanded_speed[NUM_MOTORS];  // steps/sec, signed, as given to SETSPEED
+
+// Previous raw sensor reading per motor, for direction-aware edge
+// detection (see checkReferenceEdge()). Kept fresh even when a motor is
+// neither homing_active nor speed_mode, so the first comparison made once
+// either mode starts is never against a stale reading.
+bool last_sensor_state[NUM_MOTORS];
 
 float pid_integral[NUM_MOTORS];
 float pid_prev_error[NUM_MOTORS];
@@ -142,16 +161,64 @@ void resetHomePosition(int i) {
     homed_flag[i] = true;      // loop() sends HOMED message
 }
 
-// No ISRs, no debounce -- plain level check, active HIGH, matching the
-// working Motor_driver_circular_ribbon_box_ctrl.ino sketch on the same
-// hardware/pins. Guarded by homing_active[i] rather than edge-detection:
-// only a motor currently seeking its sensor reacts to it, so once
-// resetHomePosition() clears homing_active[i] the check naturally stops
-// re-firing for that motor -- no separate debounce/edge state needed.
+// Periodic drift correction during continuous rotation (speed_mode) --
+// unlike resetHomePosition(), this does NOT touch ideal_pos/PID state or
+// exit speed_mode. It just snaps the stepper's own running step count back
+// onto the nearest true multiple of STEPS_PER_REV, bounding worst-case
+// error to under one revolution no matter how long the motor spins.
+void resyncContinuousPosition(int i) {
+    int32_t raw_pos = stepper[i].currentPosition();
+    int32_t remainder = raw_pos % STEPS_PER_REV;
+    if (remainder < 0) remainder += STEPS_PER_REV;  // C++ % keeps the dividend's sign
+    int32_t error = (remainder > STEPS_PER_REV / 2) ? (remainder - STEPS_PER_REV) : remainder;
+
+    int32_t corrected = raw_pos - error;
+    writeActualPos(i, corrected);
+    stepper[i].setCurrentPosition(corrected);
+
+    Serial.print("RESYNC ");
+    Serial.print(i);
+    Serial.print(' ');
+    Serial.println(error);
+}
+
+// The sensor has physical width, so the exact step count at which it first
+// reads triggered depends on which side you approach from -- naively using
+// the same edge for both directions would resync to two DIFFERENT physical
+// angles depending on which way the motor was travelling. Direction-aware:
+// moving forward, position 0 = the rising edge (entering the sensor's
+// zone); moving in reverse, position 0 = the falling edge (exiting the
+// zone from the other side). Used for both homing_active (direction fixed
+// by HOMING_DIR) and speed_mode (direction = sign of commanded_speed[i]).
+bool checkReferenceEdge(int i) {
+    bool state = digitalRead(SENSOR_PIN[i]);  // active HIGH
+    bool prev = last_sensor_state[i];
+    last_sensor_state[i] = state;
+
+    bool moving_forward;
+    if (homing_active[i]) {
+        moving_forward = (HOMING_DIR > 0);
+    } else if (speed_mode[i]) {
+        moving_forward = (commanded_speed[i] > 0);
+    } else {
+        return false;  // not currently seeking a reference
+    }
+
+    if (moving_forward) {
+        return (prev == LOW && state == HIGH);   // rising edge
+    } else {
+        return (prev == HIGH && state == LOW);    // falling edge
+    }
+}
+
 void pollSensors() {
     for (int i = 0; i < NUM_MOTORS; i++) {
-        if (homing_active[i] && digitalRead(SENSOR_PIN[i]) == HIGH) {
-            resetHomePosition(i);
+        if (!checkReferenceEdge(i)) continue;
+
+        if (homing_active[i]) {
+            resetHomePosition(i);          // one-time calibration: zero everything, exit homing, report HOMED
+        } else {
+            resyncContinuousPosition(i);   // periodic drift correction, stays in speed_mode
         }
     }
 }
@@ -185,6 +252,7 @@ void checkHomingTimeouts() {
 void runPID(int i) {
     if (!homed[i])        return;  // no reference until homed
     if (homing_active[i]) return;  // don't interfere with homing
+    if (speed_mode[i])    return;  // continuous-speed motors have no position target
     if (estopped[i])      return;  // latched by STOPALL until explicitly resumed
 
     int32_t actual = readActualPos(i);
@@ -230,15 +298,28 @@ void runPID(int i) {
 void cmdSetPos(int id, long steps) {
     if (id < 0 || id >= NUM_MOTORS) return;
     estopped[id] = false;
+    speed_mode[id] = false;    // leave continuous-speed mode -- mutually exclusive
     ideal_pos[id] = steps;
     stepper[id].setMaxSpeed(MAX_SPEED);
     stepper[id].moveTo(steps);
     // PID takes over fine correction once within CHOREO_ERROR_THRESHOLD.
 }
 
+void cmdSetSpeed(int id, long speed) {
+    if (id < 0 || id >= NUM_MOTORS) return;
+    estopped[id] = false;
+    speed_mode[id] = true;
+    homing_active[id] = false;  // supersedes an in-progress homing search, if any
+    commanded_speed[id] = speed;
+    stepper[id].setSpeed(speed);
+    // No moveTo(), no target -- loop() routes speed_mode motors through
+    // runSpeed() indefinitely until told otherwise (SETSPEED/SETPOS/HOME/STOP).
+}
+
 void cmdHome(int id) {
     if (id < 0 || id >= NUM_MOTORS) return;
     estopped[id] = false;
+    speed_mode[id] = false;    // leave continuous-speed mode -- mutually exclusive
     homing_active[id] = true;
     homed[id] = true;
     homing_start_time[id] = millis();
@@ -253,7 +334,16 @@ void cmdHomeAll() {
 
 void cmdStop(int id) {
     if (id < 0 || id >= NUM_MOTORS) return;
-    stepper[id].stop();            // decelerate to stop — not latched
+    if (speed_mode[id]) {
+        // stepper.stop() computes a deceleration profile that only ever
+        // gets executed by run() -- speed_mode motors are driven by
+        // runSpeed() instead, which would never process it. Just zero the
+        // speed directly; runSpeed() stops issuing steps immediately.
+        stepper[id].setSpeed(0);
+        commanded_speed[id] = 0;
+    } else {
+        stepper[id].stop();        // decelerate to stop — not latched
+    }
     homing_active[id] = false;
 }
 
@@ -331,6 +421,11 @@ void handleCommand(String &line) {
         char* a1 = strtok(NULL, " ");
         char* a2 = strtok(NULL, " ");
         if (a1 && a2) cmdSetPos(atoi(a1), atol(a2));
+
+    } else if (strcmp(cmd, "SETSPEED") == 0) {
+        char* a1 = strtok(NULL, " ");
+        char* a2 = strtok(NULL, " ");
+        if (a1 && a2) cmdSetSpeed(atoi(a1), atol(a2));
 
     } else if (strcmp(cmd, "HOME") == 0) {
         char* a1 = strtok(NULL, " ");
@@ -457,15 +552,12 @@ void setup() {
         stepper[i].setPinsInverted(false, false, true);  // EN active LOW
         stepper[i].enableOutputs();
 
-        // INPUT_PULLUP, active HIGH: matches the working
-        // Motor_driver_circular_ribbon_box_ctrl.ino sketch on the same
-        // hardware/pins. Note this means an unconnected sensor channel
-        // floats toward HIGH (via the pull-up) -- i.e. it reads as
-        // "triggered" -- so during bench testing with fewer than 7 motors
-        // wired, HOME/HOMEALL on an unconnected motor will complete
-        // (falsely) almost immediately rather than time out. Harmless, but
-        // don't mistake it for a real home.
+        // INPUT_PULLDOWN, active HIGH: unconnected sensor channels float
+        // toward LOW (not triggered) via the pull-down, so bench testing
+        // with fewer than 7 motors wired correctly times out on the
+        // unconnected ones instead of reporting a false HOMED.
         pinMode(SENSOR_PIN[i], INPUT_PULLDOWN);
+        last_sensor_state[i] = LOW;
 
         actual_pos[i]        = 0;
         ideal_pos[i]         = 0;
@@ -474,6 +566,8 @@ void setup() {
         homing_active[i]     = false;
         homed_flag[i]        = false;
         estopped[i]          = false;
+        speed_mode[i]        = false;
+        commanded_speed[i]   = 0;
         pid_integral[i]      = 0.0;
         pid_prev_error[i]    = 0.0;
 
@@ -493,10 +587,10 @@ void loop() {
 
     // 2. Execute stepper motion (must run every loop, never blocked)
     for (int i = 0; i < NUM_MOTORS; i++) {
-        if (homing_active[i]) {
-            stepper[i].runSpeed();   // constant speed during homing
+        if (homing_active[i] || speed_mode[i]) {
+            stepper[i].runSpeed();   // constant speed -- homing search or continuous rotation
         } else {
-            stepper[i].run();        // acceleration-managed motion otherwise
+            stepper[i].run();        // acceleration-managed motion toward a SETPOS target
         }
         writeActualPos(i, stepper[i].currentPosition());
     }

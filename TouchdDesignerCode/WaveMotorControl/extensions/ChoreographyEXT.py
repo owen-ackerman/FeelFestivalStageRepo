@@ -1,4 +1,4 @@
-"""
+﻿"""
 ChoreographyEXT — computes ideal motor positions every frame and pushes
 them to MotorControllerEXT. Does NOT talk to serial/network directly, and
 does NOT run PID — purely "what should each motor's target be right now."
@@ -15,8 +15,23 @@ Custom parameters on the owning COMP:
     Wavefrequency     float   Hz
     Wavephaseoffset   float   radians -- spatial phase between adjacent motors
     Wavemode          menu    SINE | TRIANGLE | CUSTOM
+    Constantspeed     float   steps/sec, signed -- slider from -limit to +limit for
+                              the 'constant' cue type (continuous unbounded rotation,
+                              see the 'SPIN' cue and Update()/GoCue() below). Live --
+                              can be adjusted while a constant-motion cue is playing.
     Playback          toggle  enable/disable output
     Activecue         int     current cue index (read-only display; set via GoCue)
+
+Note on 'constant' cues: ideal_pos is deliberately left UNBOUNDED (never
+wrapped with modulo) for this cue type. SETPOS is an absolute-position
+command, and AccelStepper's moveTo() always takes the shortest arithmetic
+path to a new absolute target -- wrapping the position with modulo would
+make the target jump from e.g. 1599 back to 0 every revolution, and the
+firmware would drive the motor BACKWARD almost a full turn to reach "0"
+the short way, instead of continuing forward by the 1 step that actually
+completes the revolution. Letting ideal_pos climb without bound avoids
+this entirely and matches how SETPOS already works; int32 has room for
+well over a million revolutions before it would matter.
 """
 
 import math
@@ -40,6 +55,7 @@ class ChoreographyEXT:
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
         self._cue_start_time = 0.0
+        self._constant_start_pos = [0] * NUM_MOTORS  # snapshot taken in GoCue() when entering a 'constant' cue
 
         self.cues = [
             {'name': 'HOME',        'type': 'home'},
@@ -48,6 +64,7 @@ class ChoreographyEXT:
             {'name': 'WAVE_FAST',   'type': 'wave', 'amplitude': 400, 'frequency': 0.8, 'phase': 0.6},
             {'name': 'UNISON_UP',   'type': 'absolute', 'positions': [800] * NUM_MOTORS},
             {'name': 'UNISON_DOWN', 'type': 'absolute', 'positions': [-800] * NUM_MOTORS},
+            {'name': 'SPIN',        'type': 'constant'},
         ]
 
     # -- per-frame update --------------------------------------------------
@@ -66,6 +83,8 @@ class ChoreographyEXT:
         controller = self._motorController()
         for i in range(NUM_MOTORS):
             controller.SetIdealPos(i, self.ComputeWavePos(i, t))
+     
+
 
     # -- wave computation --------------------------------------------------
 
