@@ -47,10 +47,6 @@
 // Below it, PID takes over for fine correction. See runPID().
 #define CHOREO_ERROR_THRESHOLD 50
 
-// Minimum time between accepted homing-sensor triggers, for both the
-// hardware-interrupt sensors (0-3) and the polled ones (4-6).
-#define DEBOUNCE_MS 10
-
 // ---------------------------------------------------------------------------
 // PID gains — per-motor, initialised from these defaults in setup().
 // Can be updated at runtime via SETPID (global or per-motor) without
@@ -72,9 +68,10 @@ const int STEP_PIN[NUM_MOTORS] = {30, 33, 36, 39, 42, 45, 48};
 const int DIR_PIN[NUM_MOTORS]  = {31, 34, 37, 40, 43, 46, 49};
 const int EN_PIN[NUM_MOTORS]   = {32, 35, 38, 41, 44, 47, 50};
 
-// Motors 0-3 sit on hardware-interrupt pins (18,19,20,21) and are handled by
-// ISRs below. Motors 4-6 (22,23,33) are not interrupt-capable on the Mega
-// and are polled in loop() via pollSensors().
+// All motors polled in loop() via pollSensors() -- no ISRs. Active HIGH:
+// digitalRead(SENSOR_PIN[i]) == HIGH means triggered (confirmed against
+// the working Motor_driver_circular_ribbon_box_ctrl.ino sketch, same pins,
+// same hardware -- its HOME_ACTIVE = HIGH).
 const int SENSOR_PIN[NUM_MOTORS] = {22, 23, 24, 25, 26, 27, 28};
 
 // ---------------------------------------------------------------------------
@@ -83,7 +80,7 @@ const int SENSOR_PIN[NUM_MOTORS] = {22, 23, 24, 25, 26, 27, 28};
 
 AccelStepper stepper[NUM_MOTORS];
 
-volatile int32_t actual_pos[NUM_MOTORS];  // steps from home — ISR writes it; access via readActualPos()/writeActualPos()
+volatile int32_t actual_pos[NUM_MOTORS];  // steps from home — access via readActualPos()/writeActualPos()
 int32_t ideal_pos[NUM_MOTORS];            // target set by TD via SETPOS
 volatile bool homed[NUM_MOTORS];          // true after first successful home
 volatile bool homing_active[NUM_MOTORS];  // currently executing home sequence
@@ -97,9 +94,7 @@ bool estopped[NUM_MOTORS];
 float pid_integral[NUM_MOTORS];
 float pid_prev_error[NUM_MOTORS];
 
-volatile bool homed_flag[NUM_MOTORS];     // set in ISR/poll, cleared+reported in loop()
-volatile unsigned long last_home_trigger_ms[NUM_MOTORS];  // debounce timestamps
-bool last_sensor_state[NUM_MOTORS];       // previous polled-sensor state (motors 4-6 only)
+volatile bool homed_flag[NUM_MOTORS];     // set by pollSensors(), cleared+reported in loop()
 
 int32_t last_reported_pos[NUM_MOTORS];
 unsigned long last_report_time = 0;
@@ -111,10 +106,11 @@ String input_buffer = "";
 
 // ---------------------------------------------------------------------------
 // Interrupt-safe access to actual_pos[]
-// int32_t writes are not atomic on the 8-bit ATmega2560, and actual_pos is
-// written both by ISRs (motors 0-3, on home) and by the main loop (every
-// iteration, from stepper.currentPosition()). Guard both sides so a read
-// never observes a torn value.
+// No ISRs write to actual_pos anymore (sensor handling is now pure polling
+// in pollSensors(), called from loop() like everything else), so this
+// guarding is no longer strictly necessary -- left in place since it's
+// harmless and cheap. Safe to simplify to plain reads/writes later if
+// wanted; not doing that now since it wasn't part of what was asked.
 // ---------------------------------------------------------------------------
 
 int32_t readActualPos(int i) {
@@ -135,8 +131,6 @@ void writeActualPos(int i, int32_t v) {
 // Homing
 // ---------------------------------------------------------------------------
 
-// Shared by both the hardware ISRs (motors 0-3) and the polled path
-// (motors 4-6). Must stay ISR-safe: no Serial, no String, no malloc.
 void resetHomePosition(int i) {
     writeActualPos(i, 0);
     stepper[i].setCurrentPosition(0);
@@ -148,52 +142,17 @@ void resetHomePosition(int i) {
     homed_flag[i] = true;      // loop() sends HOMED message
 }
 
-void handleSensorISR(int i) {
-    unsigned long now = millis();
-    if (now - last_home_trigger_ms[i] < DEBOUNCE_MS) return;
-    last_home_trigger_ms[i] = now;
-    resetHomePosition(i);
-}
-
-void sensor_isr_0() { handleSensorISR(0); }
-void sensor_isr_1() { handleSensorISR(1); }
-void sensor_isr_2() { handleSensorISR(2); }
-void sensor_isr_3() { handleSensorISR(3); }
-
-// Motors 4-6: no hardware interrupt available, so poll with edge detection
-// plus the same debounce window used by the ISR path.
+// No ISRs, no debounce -- plain level check, active HIGH, matching the
+// working Motor_driver_circular_ribbon_box_ctrl.ino sketch on the same
+// hardware/pins. Guarded by homing_active[i] rather than edge-detection:
+// only a motor currently seeking its sensor reacts to it, so once
+// resetHomePosition() clears homing_active[i] the check naturally stops
+// re-firing for that motor -- no separate debounce/edge state needed.
 void pollSensors() {
-    for (int i = 4; i < NUM_MOTORS; i++) {
-        bool state = digitalRead(SENSOR_PIN[i]);  // active LOW: LOW = triggered
-        if (last_sensor_state[i] == HIGH && state == LOW) {
-            unsigned long now = millis();
-            if (now - last_home_trigger_ms[i] >= DEBOUNCE_MS) {
-                last_home_trigger_ms[i] = now;
-                resetHomePosition(i);
-            }
+    for (int i = 0; i < NUM_MOTORS; i++) {
+        if (homing_active[i] && digitalRead(SENSOR_PIN[i]) == HIGH) {
+            resetHomePosition(i);
         }
-        last_sensor_state[i] = state;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TEMPORARY DIAGNOSTIC: sensor 0 raw monitor, no ISR, no homing logic.
-// Pins 22+ have no hardware interrupt on the Mega 2560 (only 2,3,18,19,20,21
-// do) -- sensor_isr_0 attached to SENSOR_PIN[0]=22 almost certainly never
-// fires. This bypasses that entirely: pure digitalRead() polling, reporting
-// only on change, so the raw hardware signal can be observed directly by
-// hand-triggering the switch. Motor 0 will NOT complete homing while this
-// is active -- resetHomePosition(0) is never called from here on purpose,
-// this is for observing the sensor only.
-// ---------------------------------------------------------------------------
-bool sensor0_diag_last_state = HIGH;
-
-void monitorSensor0() {
-    bool state = digitalRead(SENSOR_PIN[0]);
-    if (state != sensor0_diag_last_state) {
-        Serial.print("SENSOR0 ");
-        Serial.println(state == LOW ? "LOW (triggered)" : "HIGH (released)");
-        sensor0_diag_last_state = state;
     }
 }
 
@@ -498,13 +457,15 @@ void setup() {
         stepper[i].setPinsInverted(false, false, true);  // EN active LOW
         stepper[i].enableOutputs();
 
-        // INPUT_PULLUP: the optocoupler board supplies its own pull-up in
-        // production and easily overpowers the internal one when it fires,
-        // so this is harmless there — but it also keeps unconnected sensor
-        // channels from floating (and spuriously triggering) during bench
-        // testing with fewer than 7 motors wired.
-        pinMode(SENSOR_PIN[i], INPUT_PULLUP);
-        last_sensor_state[i] = HIGH;
+        // INPUT_PULLUP, active HIGH: matches the working
+        // Motor_driver_circular_ribbon_box_ctrl.ino sketch on the same
+        // hardware/pins. Note this means an unconnected sensor channel
+        // floats toward HIGH (via the pull-up) -- i.e. it reads as
+        // "triggered" -- so during bench testing with fewer than 7 motors
+        // wired, HOME/HOMEALL on an unconnected motor will complete
+        // (falsely) almost immediately rather than time out. Harmless, but
+        // don't mistake it for a real home.
+        pinMode(SENSOR_PIN[i], INPUT_PULLDOWN);
 
         actual_pos[i]        = 0;
         ideal_pos[i]         = 0;
@@ -513,7 +474,6 @@ void setup() {
         homing_active[i]     = false;
         homed_flag[i]        = false;
         estopped[i]          = false;
-        last_home_trigger_ms[i] = 0;
         pid_integral[i]      = 0.0;
         pid_prev_error[i]    = 0.0;
 
@@ -521,16 +481,6 @@ void setup() {
         motor_ki[i] = Ki;
         motor_kd[i] = Kd;
     }
-
-    // Hardware interrupts: motors 0-3
-    // Sensor 0 DISABLED for diagnostics -- see monitorSensor0(). Also, on
-    // Mega 2560 this would only ever work if SENSOR_PIN[0] were one of
-    // 2/3/18/19/20/21; it currently is not (see note above monitorSensor0).
-    // attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[0]), sensor_isr_0, FALLING);
-    attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[1]), sensor_isr_1, FALLING);
-    attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[2]), sensor_isr_2, FALLING);
-    attachInterrupt(digitalPinToInterrupt(SENSOR_PIN[3]), sensor_isr_3, FALLING);
-    // Motors 4-6: polled in loop() via pollSensors()
 
     Serial.println("READY");
 }
@@ -551,12 +501,11 @@ void loop() {
         writeActualPos(i, stepper[i].currentPosition());
     }
 
-    // 3. Handle homed flags set by ISRs/poll
+    // 3. Handle homed flags set by pollSensors()
     checkHomedFlags();
 
-    // 4. Poll sensors for motors 4-6, plus the sensor 0 diagnostic monitor
+    // 4. Poll all 7 sensors
     pollSensors();
-    monitorSensor0();
 
     // 5. Check homing timeouts
     checkHomingTimeouts();
