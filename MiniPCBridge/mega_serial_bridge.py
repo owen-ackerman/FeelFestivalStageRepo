@@ -9,13 +9,34 @@ TouchDesigner and does all the choreography/visualization/PID-tuning work
 over there (see TouchdDesignerCode/WaveMotorControl/extensions/
 SerialRelayEXT.py for the TD side of this link).
 
-This script has ZERO awareness of the motor protocol (SETPOS/HOME/etc) --
+This script has ZERO awareness of the MOTOR protocol (SETPOS/HOME/etc) --
 it just relays newline-terminated ASCII lines verbatim, in both
 directions, between each Mega's serial port and a matching TCP port that
-the main PC connects to. All protocol logic (motor ids, command
+the main PC connects to. All motor protocol logic (motor ids, command
 formatting, message parsing) lives on the main PC, in
-SerialProtocolBase.py. If the wire protocol ever changes, this file
+SerialProtocolBase.py. If the Mega's wire protocol ever changes, this file
 shouldn't need to.
+
+It DOES have its own small, separate vocabulary of self-status messages,
+prefixed "BRIDGE " so they can never collide with anything the Mega itself
+sends (the Mega's messages are READY/POS/HOMED/FAULT/STATUS/PID_UPDATED/
+PID_RESET/ERR -- none start with "BRIDGE"). These exist because a TCP
+connection succeeding only means the main PC reached the BRIDGE -- it says
+nothing about whether the bridge's own serial link to the Mega is actually
+up, which was a real source of confusion before this existed:
+
+    BRIDGE CONNECTED SERIAL_UP    -- sent right when a client connects, if
+                                      the Mega serial link is up at that moment
+    BRIDGE CONNECTED SERIAL_DOWN  -- same, but the serial link is down
+    BRIDGE SERIAL_UP              -- serial link came up (or came back up)
+                                      while a client was already connected
+    BRIDGE SERIAL_DOWN            -- serial link dropped while a client was
+                                      connected
+    BRIDGE DISCONNECTING <reason> -- sent to a client just before this
+                                      bridge deliberately closes their
+                                      connection (e.g. displaced by a new
+                                      one), so it's distinguishable from an
+                                      unexplained connection reset
 
 Requires: pyserial (`pip install pyserial`)
 
@@ -96,7 +117,7 @@ class MegaBridge:
                     self._ser.close()
                 except Exception:
                     pass
-        self._closeClient()
+        self._closeClient(reason="bridge shutting down")
 
     # -- serial side: Mega -> TCP client -----------------------------------
 
@@ -121,6 +142,7 @@ class MegaBridge:
 
             with self._ser_lock:
                 self._ser = ser
+            self._forwardToClient(b"BRIDGE SERIAL_UP\n")
 
             try:
                 while not self._stop.is_set():
@@ -131,6 +153,7 @@ class MegaBridge:
                     self._forwardToClient(line)
             except (serial.SerialException, OSError) as e:
                 self.log.warning(f"Serial link to {self.serial_port_name} dropped ({e}) -- reopening")
+                self._forwardToClient(b"BRIDGE SERIAL_DOWN\n")
             finally:
                 with self._ser_lock:
                     try:
@@ -172,9 +195,13 @@ class MegaBridge:
                 break  # server socket closed during stop()
 
             self.log.info(f"Main PC connected from {addr}")
-            self._closeClient()  # only one client at a time -- replace any previous one
+            self._closeClient(reason="replaced by new connection")  # only one client at a time
             with self._client_lock:
                 self._client_sock = sock
+
+            with self._ser_lock:
+                serial_up = self._ser is not None
+            self._forwardToClient(b"BRIDGE CONNECTED SERIAL_UP\n" if serial_up else b"BRIDGE CONNECTED SERIAL_DOWN\n")
 
             self._clientRecvLoop(sock)
 
@@ -215,9 +242,22 @@ class MegaBridge:
         except (serial.SerialException, OSError) as e:
             self.log.warning(f"Failed writing to {self.serial_port_name} ({e})")
 
-    def _closeClient(self):
+    def _closeClient(self, reason=None):
+        """
+        reason=None: plain close, no message -- used when the client is
+        already gone (they disconnected themselves) or the socket is
+        already broken, so there's no one to tell.
+        reason=<str>: best-effort notice sent before closing, for cases
+        where THIS bridge is the one deciding to end a still-live
+        connection (e.g. a new client displacing this one).
+        """
         with self._client_lock:
             if self._client_sock is not None:
+                if reason:
+                    try:
+                        self._client_sock.sendall(f"BRIDGE DISCONNECTING {reason}\n".encode())
+                    except OSError:
+                        pass
                 try:
                     self._client_sock.close()
                 except Exception:

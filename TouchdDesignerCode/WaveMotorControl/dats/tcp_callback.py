@@ -19,13 +19,20 @@ protocol is plain ASCII lines.
 
 
 def onConnect(dat, peer):
-    debug(f"[{parent().name}] Connected to mini PC bridge")
+    # This is just the TCP handshake to the BRIDGE succeeding -- it says
+    # nothing about whether the bridge's serial link to the Mega is up, or
+    # whether the Mega itself is alive. Real confirmation follows as
+    # separate messages: a "BRIDGE CONNECTED SERIAL_UP/DOWN" line arrives
+    # within the same instant (see SerialProtocolBase._handleBridgeMessage),
+    # then "READY" once the Mega itself checks in.
+    debug(f"[{parent().name}] TCP link to mini PC bridge established -- waiting for bridge/Mega confirmation...")
     return
 
 
 def onClose(dat, peer):
     debug(f"[{parent().name}] Disconnected from mini PC bridge")
     parent().ext.SerialRelayEXT.connected = False
+    parent().ext.SerialRelayEXT.bridge_serial_up = False
     return
 
 

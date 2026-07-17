@@ -27,17 +27,22 @@ class SerialProtocolBase:
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
         self.motor_offset = int(ownerComp.par.Motoroffset.eval())
-        self.connected = False
+        self.connected = False          # True only once the Mega itself has said READY
+        self.bridge_serial_up = False   # True once the bridge confirms its serial link to the Mega is up
+                                         # (SerialEXT/local transport has no bridge, so this just stays
+                                         # False unused there -- only SerialRelayEXT's BRIDGE messages set it)
 
     # -- receive ---------------------------------------------------------
 
     def ParseLine(self, line):
         """
         Dispatch table:
+          'BRIDGE' -> bridge self-status (SerialRelayEXT/mega_serial_bridge.py only,
+                      see mega_serial_bridge.py's module docstring for the message list)
           'POS'    -> MotorControllerEXT.UpdateActualPos(global_id, steps)
           'HOMED'  -> MotorControllerEXT.OnHomed(global_id)
           'FAULT'  -> MotorControllerEXT.OnFault(global_id, code)
-          'READY'  -> log connection confirmed
+          'READY'  -> Mega itself confirms alive -- the real end-to-end handshake
           'STATUS' -> MotorControllerEXT.OnStatusReport(...)
         global_id = local_id + self.motor_offset
         """
@@ -47,6 +52,10 @@ class SerialProtocolBase:
 
         tokens = line.split()
         msg_type = tokens[0]
+
+        if msg_type == 'BRIDGE':
+            self._handleBridgeMessage(tokens[1:])
+            return
 
         if msg_type == 'READY':
             self.connected = True
@@ -139,6 +148,42 @@ class SerialProtocolBase:
         self._send("STATUS")
 
     # -- internals -----------------------------------------------------
+
+    def _handleBridgeMessage(self, args):
+        """
+        Handles mega_serial_bridge.py's self-status messages -- distinct
+        from anything the Mega itself sends. See that file's module
+        docstring for the exact message list. These give visibility a bare
+        TCP connect doesn't: 'connected to the bridge' is not the same as
+        'the bridge's serial link to the Mega is up', which is not the same
+        as 'the Mega itself has confirmed alive' (that last one is READY,
+        handled separately in ParseLine).
+        """
+        if not args:
+            return
+        kind = args[0]
+
+        if kind == 'CONNECTED':
+            serial_state = args[1] if len(args) > 1 else 'UNKNOWN'
+            self.bridge_serial_up = (serial_state == 'SERIAL_UP')
+            debug(
+                f"[{self.ownerComp.name}] Bridge TCP link confirmed — "
+                f"Mega serial link is {'UP' if self.bridge_serial_up else 'DOWN'}"
+            )
+        elif kind == 'SERIAL_UP':
+            self.bridge_serial_up = True
+            debug(f"[{self.ownerComp.name}] Bridge reports Mega serial link back UP")
+        elif kind == 'SERIAL_DOWN':
+            self.bridge_serial_up = False
+            self.connected = False
+            debug(f"[{self.ownerComp.name}] Bridge reports Mega serial link DOWN — no longer connected")
+        elif kind == 'DISCONNECTING':
+            reason = ' '.join(args[1:]) if len(args) > 1 else 'unknown reason'
+            self.bridge_serial_up = False
+            self.connected = False
+            debug(f"[{self.ownerComp.name}] Bridge is disconnecting us: {reason}")
+        else:
+            debug(f"[{self.ownerComp.name}] Unrecognized BRIDGE message: {kind}")
 
     def _toLocal(self, global_motor_id):
         return global_motor_id - self.motor_offset
