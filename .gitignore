@@ -15,3 +15,7 @@ Stage3DFiles/
 
 # Local Claude Code tool config (machine-specific, not project source)
 .claude/settings.local.json
+
+# Python bytecode cache
+__pycache__/
+*.pyc
