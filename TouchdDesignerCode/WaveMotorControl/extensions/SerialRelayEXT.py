@@ -28,12 +28,13 @@ Child operator:
     A TCP/IP DAT (client mode) somewhere under the owning COMP, found by
     type. Its 'Callbacks DAT' parameter should point at dats/tcp_callback.py.
 
-CONFIRMED LIVE (2026-07-17): Connect()/_send() now verified against a
-running instance — dat.par.address (not netaddress), dat.par.port,
-dat.par.active, and dat.send(text) (not sendText) are all correct as
-written. Mode must be set to Client on the TCP/IP DAT itself (not a code
-concern, a DAT parameter to check by hand). Still unverified: the receive
-side — see the caveat in dats/tcp_callback.py.
+CONFIRMED LIVE (2026-07-17): Connect()/_send() verified against a running
+instance — dat.par.address (not netaddress), dat.par.port, dat.par.active,
+and dat.send(text) (not sendText) are all correct as written. Mode must be
+set to Client on the TCP/IP DAT itself (not a code concern, a DAT
+parameter to check by hand). The receive side is also now confirmed —
+see dats/tcp_callback.py for the real onConnect/onClose/onReceive
+signatures (onClose, not onDisconnect; onReceive, not onReceiveText).
 """
 
 SerialProtocolBase = mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
