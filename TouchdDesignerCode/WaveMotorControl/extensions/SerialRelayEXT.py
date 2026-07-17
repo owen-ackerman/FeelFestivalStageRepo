@@ -53,7 +53,7 @@ class SerialRelayEXT(SerialProtocolBase):
         if dat is None:
             debug(f"[{self.ownerComp.name}] Connect() failed — no TCP/IP DAT child found")
             return
-        dat.par.netaddress = self.ownerComp.par.Serverhost.eval()
+        dat.par.address = self.ownerComp.par.Serverhost.eval()
         dat.par.port = self.ownerComp.par.Serverport.eval()
         dat.par.active = True
         self.connected = False  # flips to True once a READY message is received
