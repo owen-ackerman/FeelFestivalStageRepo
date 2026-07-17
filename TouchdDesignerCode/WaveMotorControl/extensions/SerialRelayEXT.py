@@ -29,12 +29,22 @@ Child operator:
     type. Its 'Callbacks DAT' parameter should point at dats/tcp_callback.py.
 
 CONFIRMED LIVE (2026-07-17): Connect()/_send() verified against a running
-instance — dat.par.address (not netaddress), dat.par.port, dat.par.active,
-and dat.send(text) (not sendText) are all correct as written. Mode must be
-set to Client on the TCP/IP DAT itself (not a code concern, a DAT
-parameter to check by hand). The receive side is also now confirmed —
-see dats/tcp_callback.py for the real onConnect/onClose/onReceive
-signatures (onClose, not onDisconnect; onReceive, not onReceiveText).
+instance — dat.par.address (not netaddress), dat.par.port, dat.par.active
+are all correct as written. Mode must be set to Client on the TCP/IP DAT
+itself (not a code concern, a DAT parameter to check by hand). The receive
+side is also confirmed — see dats/tcp_callback.py for the real onConnect/
+onClose/onReceive signatures (onClose, not onDisconnect; onReceive, not
+onReceiveText).
+
+send() must be called with terminator= explicitly (send(command,
+terminator='\n'), not send(command + '\n')) — per TD's own help(dat.send):
+"If no append terminator is specified, a null character will automatically
+be appended to the message." That auto-null doesn't corrupt the message it
+was appended to -- it becomes the LEADING byte of the NEXT one, since TCP
+is a byte stream and the bridge just buffers and splits on '\n'. This
+caused a real bug: HOMEALL arriving as '\x00HOMEALL' and being silently
+dropped by the Arduino's parser. format ('perbyte'/'perline'/'all') is a
+receive-side chunking setting, unrelated to this — don't confuse the two.
 """
 
 SerialProtocolBase = mod(me.parent().parent().path + '/SerialProtocolBase').SerialProtocolBase
@@ -85,4 +95,11 @@ class SerialRelayEXT(SerialProtocolBase):
         if dat is None:
             debug(f"[{self.ownerComp.name}] Cannot send '{command}' — no TCP/IP DAT child found")
             return
-        dat.send(command + '\n')
+        # Must use terminator= explicitly -- send()'s default behavior when
+        # terminator isn't specified is to auto-append a null character.
+        # That null doesn't corrupt the current message; it becomes the
+        # LEADING byte of the next one (confirmed live: TCP is a byte
+        # stream, and the bridge just buffers everything and splits on
+        # '\n' -- the previous message's trailing \x00 sits in that buffer
+        # until the next '\n' arrives, then prefixes whatever follows it).
+        dat.send(command, terminator='\n')
