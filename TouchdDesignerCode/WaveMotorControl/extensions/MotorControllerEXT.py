@@ -25,6 +25,13 @@ Child operator (optional but recommended):
     event_log           Table DAT — timestamp | message, appended to by
                          LogEvent(). If absent, LogEvent() just falls back
                          to debug() console output.
+    error_chop          Constant CHOP — 14 channels, one per motor, holding
+                         the live error (ideal - actual) for visualization.
+                         Pre-configure it in TD with 14 channels (name them
+                         however you like, e.g. m0..m13); _updateErrorCHOP()
+                         only writes the values via the const{N}value params.
+                         If absent or with fewer channels, writing is a
+                         no-op — nothing breaks, that motor just isn't shown.
 """
 
 NUM_MOTORS = 14
@@ -39,6 +46,17 @@ class MotorControllerEXT:
         self.homed      = [False] * NUM_MOTORS
         self.homing     = [False] * NUM_MOTORS
         self.faults     = [None] * NUM_MOTORS
+
+        # Continuous-rotation (SETSPEED) tracking, mirroring the firmware's
+        # per-motor speed_mode. speed_mode[i] True means this motor is
+        # spinning under SETSPEED, NOT tracking a position target -- which
+        # matters for two things: change-detection on the commanded speed,
+        # and suppressing the drift-triggered re-home in UpdateActualPos
+        # (in speed mode actual_pos climbs without bound while ideal_pos is
+        # stale, so the drift check would otherwise fire a spurious re-home
+        # almost immediately).
+        self.motor_speed = [0] * NUM_MOTORS   # signed steps/sec last sent via SETSPEED
+        self.speed_mode  = [False] * NUM_MOTORS
 
     # -- logging -------------------------------------------------------
 
@@ -75,11 +93,61 @@ class MotorControllerEXT:
         identical values from a 60fps cook.
         """
         steps = int(steps)
+        # Leaving continuous-speed mode -- mirrors the firmware's cmdSetPos,
+        # which clears speed_mode on any SETPOS.
+        self.speed_mode[motor_id] = False
         if self.ideal_pos[motor_id] == steps:
             return
         self.ideal_pos[motor_id] = steps
         self.GetSerialEXT(motor_id).SendSetPos(motor_id, steps)
         self._updateStateTable(motor_id)
+
+    def SetSpeed(self, motor_id, steps_per_sec):
+        """
+        Put one motor into continuous-rotation mode at a signed speed
+        (steps/sec; sign = direction, 0 = stop but stay in speed mode).
+        Only sends SETSPEED when the value actually changes, so this is safe
+        to call every frame from a live slider / audio CHOP. Mutually
+        exclusive with position mode -- mirrors the firmware.
+        """
+        steps_per_sec = int(steps_per_sec)
+        self.speed_mode[motor_id] = True
+        if self.motor_speed[motor_id] == steps_per_sec:
+            return
+        self.motor_speed[motor_id] = steps_per_sec
+        self.GetSerialEXT(motor_id).SendSetSpeed(motor_id, steps_per_sec)
+
+    def SetMaxSpeed(self, value, motor_id=None):
+        """
+        Set max speed (steps/sec) on the Megas. Only the PID-free firmware
+        (motor_controller_without_pid.ino) acts on this; the PID build
+        ignores it. motor_id=None applies to all 14 motors (one command per
+        Mega); otherwise just that motor's Mega. Not change-detected -- send
+        it when the operator changes the value, e.g. from a slider callback,
+        not every frame.
+        """
+        if motor_id is None:
+            self.GetSerialEXT(0).SendSetMaxSpeed(value)
+            self.GetSerialEXT(7).SendSetMaxSpeed(value)
+            self.LogEvent(f"SETMAXSPEED {value} sent to all motors")
+        else:
+            self.GetSerialEXT(motor_id).SendSetMaxSpeed(value, motor_id)
+            self.LogEvent(f"SETMAXSPEED {value} sent to motor {motor_id}")
+
+    def SetAccel(self, value, motor_id=None):
+        """
+        Set max acceleration (steps/sec^2) on the Megas. PID-free firmware
+        only. motor_id=None applies to all 14 motors; otherwise just that
+        motor's Mega. Acceleration only affects SETPOS moves (run()), not
+        SETSPEED continuous rotation (runSpeed() ignores acceleration).
+        """
+        if motor_id is None:
+            self.GetSerialEXT(0).SendSetAccel(value)
+            self.GetSerialEXT(7).SendSetAccel(value)
+            self.LogEvent(f"SETACCEL {value} sent to all motors")
+        else:
+            self.GetSerialEXT(motor_id).SendSetAccel(value, motor_id)
+            self.LogEvent(f"SETACCEL {value} sent to motor {motor_id}")
 
     def UpdateActualPos(self, motor_id, steps):
         """
@@ -89,6 +157,12 @@ class MotorControllerEXT:
         """
         self.actual_pos[motor_id] = steps
         self._updateStateTable(motor_id)
+
+        # In continuous-speed mode there is no position target -- actual_pos
+        # climbs without bound, so the ideal-vs-actual drift check is
+        # meaningless and would fire a spurious re-home every report.
+        if self.speed_mode[motor_id]:
+            return
 
         threshold = self.ownerComp.par.Autorehomedrift.eval()
         drift = abs(self.ideal_pos[motor_id] - steps)
@@ -136,6 +210,7 @@ class MotorControllerEXT:
         for i in range(NUM_MOTORS):
             self.homed[i] = False
             self.homing[i] = True
+            self.speed_mode[i] = False   # homing leaves speed mode (mirrors firmware)
         self.GetSerialEXT(0).SendHomeAll()
         self.GetSerialEXT(7).SendHomeAll()
         self.LogEvent("HOMEALL sent to both Megas")
@@ -144,6 +219,7 @@ class MotorControllerEXT:
         """Send HOME for one motor."""
         self.homed[motor_id] = False
         self.homing[motor_id] = True
+        self.speed_mode[motor_id] = False   # homing leaves speed mode (mirrors firmware)
         self.GetSerialEXT(motor_id).SendHome(motor_id)
         self.LogEvent(f"HOME sent for motor {motor_id}")
 
@@ -162,6 +238,15 @@ class MotorControllerEXT:
         self._pauseChoreography()
         self.GetSerialEXT(0).SendStopAll()
         self.GetSerialEXT(7).SendStopAll()
+        # Firmware zeroed each motor's speed on STOPALL, so sync our cached
+        # commanded speed to 0. Otherwise SetSpeed's change-detection could
+        # suppress a later SETSPEED with the same value the motor had before
+        # the stop, and it would never resume (the firmware also latches
+        # estopped, which SETSPEED clears -- but only if the send happens).
+        # speed_mode is left as-is so UpdateActualPos keeps suppressing the
+        # drift re-home for a motor that was spinning.
+        for i in range(NUM_MOTORS):
+            self.motor_speed[i] = 0
         self.LogEvent("STOPALL sent to both Megas — emergency stop")
 
     def _pauseChoreography(self):
@@ -235,6 +320,12 @@ class MotorControllerEXT:
     # -- monitoring table --------------------------------------------------
 
     def _updateStateTable(self, motor_id):
+        # Refresh the error CHOP too -- both are "this motor's state changed,
+        # update its displays", and all callers already funnel through here.
+        # Done first, and independently guarded, so the CHOP still updates
+        # even when no motor_state_table exists (and vice versa).
+        self._updateErrorCHOP(motor_id)
+
         table = self.ownerComp.op('motor_state_table')
         if table is None:
             return
@@ -253,6 +344,35 @@ class MotorControllerEXT:
             int(self.homing[motor_id]),
             self.faults[motor_id] or '',
         ])
+
+    def _updateErrorCHOP(self, motor_id):
+        """
+        Write motor_id's live error (ideal - actual) into channel motor_id
+        of a Constant CHOP named 'error_chop', for real-time visualization.
+
+        Uses the const{N}value parameter pattern proven in the RobotRibbon
+        project's RobotEXT.PushToCHOP(). getattr(..., None) makes this
+        robust to the CHOP not existing yet, or being configured with fewer
+        than NUM_MOTORS channels -- in either case the write is silently
+        skipped rather than raising, so this never interferes with the
+        control path. Channel names are set on the CHOP itself in TD.
+        """
+        chop_err = self.ownerComp.op('error_chop')
+        chop_ideal = self.ownerComp.op('ideal_chop')
+        chop_actual = self.ownerComp.op('actual_chop')
+
+        if chop_err is None:
+            return
+        par_err = getattr(chop_err.par, f'const{motor_id}value', None)
+        par_ideal = getattr(chop_ideal.par, f'const{motor_id}value', None)
+        par_actual = getattr(chop_actual.par, f'const{motor_id}value', None)
+
+        if par_err is not None:
+            par_err.val = self.ideal_pos[motor_id] - self.actual_pos[motor_id]
+        if par_ideal is not None:
+            par_ideal.val = self.ideal_pos[motor_id]
+        if par_actual is not None:
+            par_actual.val = self.actual_pos[motor_id]
 
     def GetStateTable(self):
         return self.ownerComp.op('motor_state_table')

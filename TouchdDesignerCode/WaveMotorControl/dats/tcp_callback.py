@@ -33,9 +33,25 @@ def onClose(dat, peer):
     debug(f"[{parent().name}] Disconnected from mini PC bridge")
     parent().ext.SerialRelayEXT.connected = False
     parent().ext.SerialRelayEXT.bridge_serial_up = False
+    op('const_connect').par.const0value = 0
     return
 
 
-def onReceive(dat, rowIndex, message, byteData, peer):
+def onReceive(dat: tcpipDAT, rowIndex: int, message: str, byteData: bytes, 
+              peer: Peer):
     parent().ext.SerialRelayEXT.onNetworkReceive(dat, message)
+    if (message == "BRIDGE CONNECTED SERIAL_UP"):
+        op('const_connect').par.const0value = 1
+
+    """
+    Called when TCP data is received.
+
+    Args:
+        dat: The DAT that received the data
+        rowIndex: The row number the data was placed into
+        message: ASCII representation of the data
+        byteData: A byte array of the data received
+        peer: A Peer object describing the originating data
+    """
     return
+

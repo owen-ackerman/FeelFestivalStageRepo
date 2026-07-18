@@ -94,6 +94,8 @@ class OSCHandlerEXT:
             controller.ResetPIDState()
         elif address == '/motor/setpos' and len(args) >= 2:
             controller.SetIdealPos(int(args[0]), int(args[1]))
+        elif address == '/motor/setspeed' and len(args) >= 2:
+            controller.SetSpeed(int(args[0]), int(args[1]))
         else:
             debug(f"[OSCHandlerEXT] Unhandled OSC message: {address} {args}")
 

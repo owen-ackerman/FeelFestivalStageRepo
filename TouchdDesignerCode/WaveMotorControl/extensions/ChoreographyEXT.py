@@ -15,23 +15,29 @@ Custom parameters on the owning COMP:
     Wavefrequency     float   Hz
     Wavephaseoffset   float   radians -- spatial phase between adjacent motors
     Wavemode          menu    SINE | TRIANGLE | CUSTOM
-    Constantspeed     float   steps/sec, signed -- slider from -limit to +limit for
-                              the 'constant' cue type (continuous unbounded rotation,
-                              see the 'SPIN' cue and Update()/GoCue() below). Live --
-                              can be adjusted while a constant-motion cue is playing.
+    Constantspeed     float   steps/sec, signed -- global speed for the 'constant'
+                              cue type (continuous rotation). Live-adjustable. Used
+                              as a fallback when no per-motor 'custom_speed' CHOP is
+                              present (see Update()).
     Playback          toggle  enable/disable output
     Activecue         int     current cue index (read-only display; set via GoCue)
 
-Note on 'constant' cues: ideal_pos is deliberately left UNBOUNDED (never
-wrapped with modulo) for this cue type. SETPOS is an absolute-position
-command, and AccelStepper's moveTo() always takes the shortest arithmetic
-path to a new absolute target -- wrapping the position with modulo would
-make the target jump from e.g. 1599 back to 0 every revolution, and the
-firmware would drive the motor BACKWARD almost a full turn to reach "0"
-the short way, instead of continuing forward by the 1 step that actually
-completes the revolution. Letting ideal_pos climb without bound avoids
-this entirely and matches how SETPOS already works; int32 has room for
-well over a million revolutions before it would matter.
+Optional child operator:
+    custom_speed      CHOP — if present, its channel i drives motor i's speed
+                      during a 'constant' cue instead of the global Constantspeed
+                      param. This is the audio-reactivity hook: wire an audio
+                      analysis CHOP (Audio Device In -> Analyze/Spectrum, scaled
+                      to steps/sec) into it and continuous rotation follows the
+                      music per-motor. Falls back to Constantspeed for any channel
+                      it doesn't provide.
+
+Note on 'constant' cues: these use SETSPEED (the firmware's continuous-
+rotation mode), NOT SETPOS. There is no position target tracked on the TD
+side at all while spinning -- the motor just runs at the commanded speed,
+and drift is corrected entirely on the Arduino by resyncing against the
+homing sensor once per revolution (see resyncContinuousPosition in
+motor_controller.ino). This sidesteps the position-wraparound problem an
+absolute-position approach would have had.
 """
 
 import math
@@ -55,7 +61,6 @@ class ChoreographyEXT:
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
         self._cue_start_time = 0.0
-        self._constant_start_pos = [0] * NUM_MOTORS  # snapshot taken in GoCue() when entering a 'constant' cue
 
         self.cues = [
             {'name': 'HOME',        'type': 'home'},
@@ -70,21 +75,30 @@ class ChoreographyEXT:
     # -- per-frame update --------------------------------------------------
 
     def Update(self):
-        """Called every frame by the Execute DAT. Recomputes and streams
-        ideal positions for whichever cue is active."""
+        """Called every frame by the Execute DAT. Streams the active cue's
+        per-frame output. Only 'wave' and 'constant' cues need per-frame
+        work; 'home'/'hold'/'absolute' are one-shot (handled in GoCue)."""
         if not self.ownerComp.par.Playback.eval():
             return
 
         cue = self.cues[self.ownerComp.par.Activecue.eval()]
-        if cue['type'] != 'wave':
-            return  # 'home'/'hold'/'absolute' need no per-frame recompute
-
-        t = absTime.seconds - self._cue_start_time
         controller = self._motorController()
-        for i in range(NUM_MOTORS):
-            controller.SetIdealPos(i, self.ComputeWavePos(i, t))
-     
 
+        if cue['type'] == 'wave':
+            t = absTime.seconds - self._cue_start_time
+            for i in range(NUM_MOTORS):
+                controller.SetIdealPos(i, self.ComputeWavePos(i, t))
+
+        elif cue['type'] == 'constant':
+            # Per-motor speed from the custom_speed CHOP if present (audio
+            # reactivity hook), else the global Constantspeed slider.
+            # SetSpeed change-detects, so calling every frame only actually
+            # sends SETSPEED when a motor's speed changes.
+            custom = self.ownerComp.op('custom_speed')
+            default_speed = self.ownerComp.par.Constantspeed.eval()
+            for i in range(NUM_MOTORS):
+                speed = custom[i][0] if (custom and i < custom.numChans) else default_speed
+                controller.SetSpeed(i, speed)
 
     # -- wave computation --------------------------------------------------
 
@@ -134,9 +148,16 @@ class ChoreographyEXT:
         elif cue['type'] == 'absolute':
             for i, pos in enumerate(cue['positions']):
                 controller.SetIdealPos(i, pos)
-        # 'hold' needs no action here -- Update() already skips recomputing
-        # positions for any non-'wave' cue, so motors just stay wherever
-        # they are.
+        elif cue['type'] == 'hold':
+            # Freeze in place. A position-mode motor already holds its last
+            # SETPOS, so nothing to do -- but a motor still in continuous
+            # rotation would keep spinning, so explicitly command speed 0
+            # (stays in speed mode, just stopped).
+            for i in range(NUM_MOTORS):
+                if controller.speed_mode[i]:
+                    controller.SetSpeed(i, 0)
+        # 'constant' needs no GoCue action -- Update() drives it every frame
+        # from Constantspeed / the custom_speed CHOP.
 
         controller.LogEvent(f"Cue -> {cue['name']}")
 

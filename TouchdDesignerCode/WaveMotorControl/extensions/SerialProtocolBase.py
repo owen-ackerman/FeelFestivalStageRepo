@@ -103,6 +103,15 @@ class SerialProtocolBase:
         """Send: SETPOS <local_id> <steps>"""
         self._send(f"SETPOS {self._toLocal(global_motor_id)} {int(ideal_steps)}")
 
+    def SendSetSpeed(self, global_motor_id, steps_per_sec):
+        """
+        Send: SETSPEED <local_id> <signed_steps_per_sec>
+        Puts the motor into continuous-rotation mode on the firmware side
+        (see cmdSetSpeed in motor_controller.ino). Sign is direction; 0
+        stops it while staying in speed mode.
+        """
+        self._send(f"SETSPEED {self._toLocal(global_motor_id)} {int(steps_per_sec)}")
+
     def SendHome(self, global_motor_id):
         """Send: HOME <local_id>"""
         self._send(f"HOME {self._toLocal(global_motor_id)}")
@@ -126,6 +135,31 @@ class SerialProtocolBase:
     def SendDisable(self, global_motor_id):
         """Send: DISABLE <local_id>"""
         self._send(f"DISABLE {self._toLocal(global_motor_id)}")
+
+    # -- send: motion limits (motor_controller_without_pid.ino only) -------
+
+    def SendSetMaxSpeed(self, value, global_motor_id=None):
+        """
+        Send: SETMAXSPEED <steps_per_sec>            (all motors on this Mega)
+        Send: SETMAXSPEED <local_id> <steps_per_sec> (one motor only)
+        Only the PID-free firmware handles this; the PID build replies
+        "ERR unknown command" (harmless -- just logged).
+        """
+        if global_motor_id is None:
+            self._send(f"SETMAXSPEED {int(value)}")
+        else:
+            self._send(f"SETMAXSPEED {self._toLocal(global_motor_id)} {int(value)}")
+
+    def SendSetAccel(self, value, global_motor_id=None):
+        """
+        Send: SETACCEL <steps_per_sec2>            (all motors on this Mega)
+        Send: SETACCEL <local_id> <steps_per_sec2> (one motor only)
+        PID-free firmware only; PID build replies "ERR unknown command".
+        """
+        if global_motor_id is None:
+            self._send(f"SETACCEL {int(value)}")
+        else:
+            self._send(f"SETACCEL {self._toLocal(global_motor_id)} {int(value)}")
 
     # -- send: PID ---------------------------------------------------------
 
