@@ -182,9 +182,34 @@ class MotorControllerEXT:
         self.faults[motor_id] = None
         self.LogEvent(f"Motor {motor_id} HOMED")
         self._updateStateTable(motor_id)
-        # Clear any integral/derivative accumulated before the home crossing
-        # so the first move afterward doesn't jerk (spec note 13).
-        self.ResetPIDState(motor_id)
+        # NOTE: do NOT send RESETPID/SETPID here. The PID firmware already
+        # zeroes its own integral/derivative on the home crossing
+        # (resetHomePosition), so this was always redundant -- and on the
+        # non-PID firmwares (without_pid / simple / speed) it just produces
+        # "ERR unknown command: SETPID" noise. Firmware owns its own PID
+        # state reset on home.
+
+    def OnZeroCross(self, motor_id, firmware_count):
+        """
+        Called by SerialEXT on a ZERO message from speed_motor_controller:
+        the motor physically crossed its home sensor mid-run, so its TRUE
+        position is 0 right now. Re-anchor our estimate to that physical
+        zero, correcting whatever open-loop drift had accumulated. This is
+        the absolute reference that closes ChoreographySpeedEXT's WAVE
+        feedback loop -- between crossings it relies on POS + the Kp term;
+        each crossing gives it an exact fix.
+
+        firmware_count is the Arduino's open-loop step count at the crossing
+        (should be ~0 in WAVE mode); |count| is the drift that just got
+        corrected, useful for monitoring. The firmware deliberately did NOT
+        reset its own count (that would stop the motor), so its next POS
+        will still report the drifted count -- fine, in WAVE that count is
+        near 0 anyway, and CONSTANT/DIRECTION don't use actual_pos.
+        """
+        self.actual_pos[motor_id] = 0
+        self._updateStateTable(motor_id)
+        if abs(firmware_count) > 0:
+            self.LogEvent(f"Motor {motor_id} zero-cross; drift corrected {firmware_count}")
 
     def OnFault(self, motor_id, code):
         """Records fault. On TIMEOUT, marks the motor not homed."""
@@ -227,10 +252,10 @@ class MotorControllerEXT:
         """
         Emergency stop — STOPALL to both Megas.
 
-        Also pauses ChoreographyEXT first. Without this, if a wave cue is
-        still playing, the very next frame's Update() would push a new
-        SETPOS -- and the firmware's estop latch is deliberately cleared by
-        any new SETPOS (that's meant for a human re-issuing a command after
+        Pauses every motion source first (position AND speed choreographers).
+        Without this, if any source is still playing, its next-frame Update()
+        would push a new SETPOS/SETSPEED -- and the firmware clears its estop
+        latch on any such command (meant for a human re-issuing after
         investigating a stop, not an automated loop that has no idea a stop
         just happened). Silencing the source, not just the symptom, is what
         makes this an actual emergency stop rather than a stop-for-one-frame.
@@ -250,10 +275,15 @@ class MotorControllerEXT:
         self.LogEvent("STOPALL sent to both Megas — emergency stop")
 
     def _pauseChoreography(self):
-        choreo = self.ownerComp.parent().op('base_choreography')
-        if choreo is None:
-            return
-        choreo.par.Playback = 0
+        # Pause EVERY motion source, not just the position choreographer.
+        # Any source left with Playback on would re-issue a command the next
+        # frame and defeat the stop -- for the speed choreographer that's a
+        # SETSPEED which also clears the firmware's estop latch. Add new
+        # choreography COMP names here as more motion sources are created.
+        for name in ('base_choreography', 'base_choreography_speed'):
+            comp = self.ownerComp.parent().op(name)
+            if comp is not None and hasattr(comp.par, 'Playback'):
+                comp.par.Playback = 0
 
     def EnableAll(self):
         """Enable all driver outputs. Protocol has no bulk ENABLEALL, so this sends per-motor."""
@@ -357,22 +387,23 @@ class MotorControllerEXT:
         skipped rather than raising, so this never interferes with the
         control path. Channel names are set on the CHOP itself in TD.
         """
-        chop_err = self.ownerComp.op('error_chop')
-        chop_ideal = self.ownerComp.op('ideal_chop')
-        chop_actual = self.ownerComp.op('actual_chop')
+        # Each CHOP is looked up and written independently: a missing op, or
+        # one configured with fewer than NUM_MOTORS channels, silently skips
+        # only its own write instead of crashing or blocking the others.
+        # (The previous version only null-checked error_chop, so a missing
+        # ideal_chop/actual_chop would raise 'NoneType has no attribute par'.)
+        self._writeChopChannel('error_chop', motor_id,
+                               self.ideal_pos[motor_id] - self.actual_pos[motor_id])
+        self._writeChopChannel('ideal_chop', motor_id, self.ideal_pos[motor_id])
+        self._writeChopChannel('actual_chop', motor_id, self.actual_pos[motor_id])
 
-        if chop_err is None:
+    def _writeChopChannel(self, chop_name, motor_id, value):
+        chop = self.ownerComp.op(chop_name)
+        if chop is None:
             return
-        par_err = getattr(chop_err.par, f'const{motor_id}value', None)
-        par_ideal = getattr(chop_ideal.par, f'const{motor_id}value', None)
-        par_actual = getattr(chop_actual.par, f'const{motor_id}value', None)
-
-        if par_err is not None:
-            par_err.val = self.ideal_pos[motor_id] - self.actual_pos[motor_id]
-        if par_ideal is not None:
-            par_ideal.val = self.ideal_pos[motor_id]
-        if par_actual is not None:
-            par_actual.val = self.actual_pos[motor_id]
+        par = getattr(chop.par, f'const{motor_id}value', None)
+        if par is not None:
+            par.val = value
 
     def GetStateTable(self):
         return self.ownerComp.op('motor_state_table')

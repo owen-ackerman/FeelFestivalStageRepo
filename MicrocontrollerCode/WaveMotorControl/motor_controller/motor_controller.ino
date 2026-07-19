@@ -175,6 +175,9 @@ void resyncContinuousPosition(int i) {
     int32_t corrected = raw_pos - error;
     writeActualPos(i, corrected);
     stepper[i].setCurrentPosition(corrected);
+    // setCurrentPosition() resets AccelStepper's internal speed to 0, which
+    // would stop the motor dead at the sensor every revolution. Restore it.
+    stepper[i].setSpeed(commanded_speed[i]);
 
     Serial.print("RESYNC ");
     Serial.print(i);

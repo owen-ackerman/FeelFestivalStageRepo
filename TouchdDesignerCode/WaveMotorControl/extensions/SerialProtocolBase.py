@@ -41,6 +41,7 @@ class SerialProtocolBase:
                       see mega_serial_bridge.py's module docstring for the message list)
           'POS'    -> MotorControllerEXT.UpdateActualPos(global_id, steps)
           'HOMED'  -> MotorControllerEXT.OnHomed(global_id)
+          'ZERO'   -> MotorControllerEXT.OnZeroCross(global_id, count)
           'FAULT'  -> MotorControllerEXT.OnFault(global_id, code)
           'READY'  -> Mega itself confirms alive -- the real end-to-end handshake
           'STATUS' -> MotorControllerEXT.OnStatusReport(...)
@@ -73,6 +74,15 @@ class SerialProtocolBase:
             self._motorController().OnHomed(local_id + self.motor_offset)
             return
 
+        if msg_type == 'ZERO' and len(tokens) >= 2:
+            # speed_motor_controller: motor physically crossed its home
+            # sensor mid-run. Optional 3rd token is the firmware's open-loop
+            # count at the crossing (drift diagnostic).
+            local_id = int(tokens[1])
+            count = int(tokens[2]) if len(tokens) >= 3 else 0
+            self._motorController().OnZeroCross(local_id + self.motor_offset, count)
+            return
+
         if msg_type == 'FAULT' and len(tokens) >= 3:
             local_id = int(tokens[1])
             code = tokens[2]
@@ -91,8 +101,16 @@ class SerialProtocolBase:
             )
             return
 
-        if msg_type in ('PID_UPDATED', 'PID_RESET'):
+        if msg_type in ('PID_UPDATED', 'PID_RESET', 'MAXSPEED_UPDATED', 'ACCEL_UPDATED', 'RESYNC'):
             debug(f"[{self.ownerComp.name}] {line}")
+            return
+
+        if msg_type == 'ERR':
+            # The firmware echoes commands it doesn't recognize. Expected
+            # when TD talks to a firmware that lacks a feature (e.g. SETPID
+            # on a non-PID build) -- log as a firmware notice, not a TD
+            # parse failure.
+            debug(f"[{self.ownerComp.name}] Firmware {line}")
             return
 
         debug(f"[{self.ownerComp.name}] Unrecognized message: {line}")

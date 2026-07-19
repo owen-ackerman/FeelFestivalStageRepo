@@ -62,14 +62,26 @@ class ChoreographyEXT:
         self.ownerComp = ownerComp
         self._cue_start_time = 0.0
 
+        # Each cue may optionally carry 'maxspeed' (steps/sec) and 'accel'
+        # (steps/sec^2). When present, GoCue pushes them to the Megas via
+        # SETMAXSPEED/SETACCEL as the cue activates -- so a cue can raise its
+        # own governor for fast motion, or lower it for gentle motion,
+        # without a separate manual command. Only effective on the PID-free
+        # firmware (motor_controller_without_pid.ino), which is the one that
+        # accepts SETMAXSPEED/SETACCEL. Omit these keys to leave the current
+        # limits untouched when the cue activates.
         self.cues = [
             {'name': 'HOME',        'type': 'home'},
             {'name': 'FREEZE',      'type': 'hold'},
-            {'name': 'WAVE_SLOW',   'type': 'wave', 'amplitude': 800, 'frequency': 0.2, 'phase': 0.4},
-            {'name': 'WAVE_FAST',   'type': 'wave', 'amplitude': 400, 'frequency': 0.8, 'phase': 0.6},
-            {'name': 'UNISON_UP',   'type': 'absolute', 'positions': [800] * NUM_MOTORS},
-            {'name': 'UNISON_DOWN', 'type': 'absolute', 'positions': [-800] * NUM_MOTORS},
-            {'name': 'SPIN',        'type': 'constant'},
+            {'name': 'WAVE_SLOW',   'type': 'wave', 'amplitude': 800, 'frequency': 0.2, 'phase': 0.4,
+                                    'maxspeed': 2000, 'accel': 800},
+            {'name': 'WAVE_FAST',   'type': 'wave', 'amplitude': 400, 'frequency': 0.8, 'phase': 0.6,
+                                    'maxspeed': 6000, 'accel': 3000},
+            {'name': 'UNISON_UP',   'type': 'absolute', 'positions': [800] * NUM_MOTORS,
+                                    'maxspeed': 4000, 'accel': 1500},
+            {'name': 'UNISON_DOWN', 'type': 'absolute', 'positions': [-800] * NUM_MOTORS,
+                                    'maxspeed': 4000, 'accel': 1500},
+            {'name': 'SPIN',        'type': 'constant', 'maxspeed': 8000},
         ]
 
     # -- per-frame update --------------------------------------------------
@@ -139,6 +151,12 @@ class ChoreographyEXT:
 
         controller = self._motorController()
 
+        # Apply this cue's speed/accel limits first, so the governor is in
+        # place before any motion is commanded below (matters for SPIN in
+        # particular -- the ceiling must be up before Update() commands the
+        # speed, or the first SETSPEED would be clamped low).
+        self._applyCueLimits(cue, controller)
+
         if cue['type'] == 'home':
             controller.HomeAll()
         elif cue['type'] == 'wave':
@@ -160,6 +178,16 @@ class ChoreographyEXT:
         # from Constantspeed / the custom_speed CHOP.
 
         controller.LogEvent(f"Cue -> {cue['name']}")
+
+    def _applyCueLimits(self, cue, controller):
+        """Push a cue's optional maxspeed/accel to all motors as it activates.
+        Silently does nothing for keys the cue omits, leaving those limits
+        as they were. No-op on the PID firmware (it ignores SETMAXSPEED/
+        SETACCEL)."""
+        if 'maxspeed' in cue:
+            controller.SetMaxSpeed(cue['maxspeed'])
+        if 'accel' in cue:
+            controller.SetAccel(cue['accel'])
 
     def NextCue(self):
         self.GoCue(min(self.ownerComp.par.Activecue.eval() + 1, len(self.cues) - 1))

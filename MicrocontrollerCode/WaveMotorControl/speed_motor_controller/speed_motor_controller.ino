@@ -87,21 +87,36 @@ uint8_t status_next_motor = 0;
 String input_buffer = "";
 
 // ---------------------------------------------------------------------------
-// Homing (the only place the sensor is read)
+// Sensor polling
 // ---------------------------------------------------------------------------
 
-// Reads every motor's sensor but only ACTS on it while that motor is homing.
-// Direction-aware edge: the sensor has physical width, so "home" is the
-// rising edge when moving forward and the falling edge when moving reverse.
-// HOMING_DIR fixes which. last_sensor_state is refreshed every call so the
-// first comparison after HOME starts is never stale.
-void pollHomingSensors() {
-    bool moving_forward = (HOMING_DIR > 0);
+// Reads every motor's sensor every loop. Two behaviors depending on state:
+//
+//   homing_active[i]  -> HOME: on the reference edge, zero the position and
+//                        finish homing (the motor DOES stop -- that's homing).
+//
+//   homed[i], moving  -> RUN: on the reference edge, REPORT the crossing
+//                        ("ZERO <id> <count>") but do NOT touch position or
+//                        speed. This is the absolute-position reference TD's
+//                        feedback loop uses to re-anchor. Modifying the
+//                        stepper here (as the resync builds did) resets its
+//                        speed to 0 and stops the motor at the sensor -- so
+//                        this build only reports and lets TD do the math.
+//
+// Direction-aware edge in both cases: the sensor has physical width, so the
+// true zero is the rising edge moving forward and the falling edge moving
+// reverse. Direction is HOMING_DIR while homing, or the sign of the
+// commanded speed while running. last_sensor_state is refreshed every call.
+void pollSensors() {
     for (int i = 0; i < NUM_MOTORS; i++) {
         bool state = digitalRead(SENSOR_PIN[i]);
+        bool prev = last_sensor_state[i];
+        last_sensor_state[i] = state;
+
         if (homing_active[i]) {
-            bool edge = moving_forward ? (last_sensor_state[i] == LOW && state == HIGH)
-                                       : (last_sensor_state[i] == HIGH && state == LOW);
+            bool fwd = (HOMING_DIR > 0);
+            bool edge = fwd ? (prev == LOW && state == HIGH)
+                            : (prev == HIGH && state == LOW);
             if (edge) {
                 stepper[i].setCurrentPosition(0);
                 stepper[i].setSpeed(0);      // setCurrentPosition zeroes speed anyway; make it explicit
@@ -109,9 +124,21 @@ void pollHomingSensors() {
                 homed[i] = true;
                 homing_active[i] = false;
                 homed_flag[i] = true;        // loop() sends HOMED
+
+            }
+        } else if (homed[i] && commanded_speed[i] != 0) {
+            bool fwd = (commanded_speed[i] > 0);
+            bool edge = fwd ? (prev == LOW && state == HIGH)
+                            : (prev == HIGH && state == LOW);
+            if (edge) {
+                // Report only -- physical position is 0 right now; the count
+                // tells TD how far the open-loop count has drifted from it.
+                Serial.print("ZERO ");
+                Serial.print(i);
+                Serial.print(' ');
+                Serial.println(stepper[i].currentPosition());
             }
         }
-        last_sensor_state[i] = state;
     }
 }
 
@@ -339,7 +366,7 @@ void loop() {
     }
 
     checkHomedFlags();
-    pollHomingSensors();     // acts only on motors currently homing
+    pollSensors();           // homing edge -> HOMED; run-time zero crossing -> ZERO report
     checkHomingTimeouts();
     sendPositionReports();
     sendStatusChunk();
