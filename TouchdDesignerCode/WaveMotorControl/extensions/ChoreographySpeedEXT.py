@@ -56,6 +56,12 @@ import math
 
 NUM_MOTORS = 14
 
+# Reject dt gaps larger than this (seconds) in the WAVE phase accumulator --
+# a paused/resumed project or a frame hitch would otherwise advance the
+# phase by a huge step. ~0.1s comfortably exceeds a normal frame (16-50ms)
+# while rejecting pause gaps.
+MAX_DT = 0.1
+
 # Distance from center stage per motor id, for SYMMETRIC phase. Motors 6 & 7
 # are the center (phase 0), 0 & 13 the outer ends (phase 6). Matches the
 # MOTOR_POSITION table in ChoreographyEXT -- verify against the real rig.
@@ -68,7 +74,11 @@ DIST_FROM_CENTER = [
 class ChoreographySpeedEXT:
     def __init__(self, ownerComp):
         self.ownerComp = ownerComp
-        self._start_time = absTime.seconds  # WAVE phase clock origin
+        # WAVE phase is ACCUMULATED, not computed from absolute time, so a
+        # live Wavefreq change only alters the rate of advance -- never the
+        # phase value -- and the motion doesn't jump. See _updateWave.
+        self._phase_accum = 0.0
+        self._last_time = absTime.seconds
 
     # -- per-frame update --------------------------------------------------
 
@@ -103,18 +113,30 @@ class ChoreographySpeedEXT:
             self._updateWave(controller)
 
     def _updateWave(self, controller):
-        t = absTime.seconds - self._start_time
-        amp = self.ownerComp.par.Waveamp.eval()/10
+        # Advance the shared phase accumulator by this frame's elapsed time.
+        # Because phase is integrated (not phase = w*t), changing Wavefreq
+        # changes only w here -- the accumulated phase stays continuous, so
+        # no jump/jitter. A pause/resume or frame hitch (dt > MAX_DT) is
+        # rejected so it can't lurch the phase forward.
+        now = absTime.seconds
+        dt = now - self._last_time
+        self._last_time = now
+        if dt < 0 or dt > MAX_DT:
+            dt = 0.0
+
         freq = self.ownerComp.par.Wavefreq.eval()
-        kp = self.ownerComp.par.Wavekp.eval()
         w = 2.0 * math.pi * freq
+        self._phase_accum += w * dt
+
+        amp = self.ownerComp.par.Waveamp.eval() / 10
+        kp = self.ownerComp.par.Wavekp.eval()
 
         for i in range(NUM_MOTORS):
             if controller.homing[i]:
                 continue   # don't override an in-progress home
-            phase = w * t + self._phase(i)
+            phase = self._phase_accum + self._phase(i)
             desired = amp * math.sin(phase)          # where motor i should be
-            feedforward = amp * w * math.cos(phase)  # d/dt of desired
+            feedforward = amp * w * math.cos(phase)  # d/dt of desired (uses current freq)
             error = desired - controller.actual_pos[i]
             controller.SetSpeed(i, feedforward + kp * error)
 
@@ -136,9 +158,10 @@ class ChoreographySpeedEXT:
     # -- controls ------------------------------------------------------
 
     def ResetWaveClock(self):
-        """Restart the WAVE phase clock at t=0 (call when starting a fresh
-        wave so it begins from phase 0)."""
-        self._start_time = absTime.seconds
+        """Restart the WAVE phase at 0 (call when starting a fresh wave so
+        it begins from phase 0)."""
+        self._phase_accum = 0.0
+        self._last_time = absTime.seconds
 
     def StopAll(self):
         """Stop output and all motors."""

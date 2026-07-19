@@ -36,6 +36,11 @@ Child operator (optional but recommended):
 
 NUM_MOTORS = 14
 
+# Must match the firmware's STEPS_PER_REV #define. Used to interpret a
+# zero-crossing during continuous rotation: the count is a whole-revolution
+# multiple, so the real per-rev drift is the remainder (see OnZeroCross).
+STEPS_PER_REV = 1600
+
 
 class MotorControllerEXT:
     def __init__(self, ownerComp):
@@ -199,17 +204,23 @@ class MotorControllerEXT:
         feedback loop -- between crossings it relies on POS + the Kp term;
         each crossing gives it an exact fix.
 
-        firmware_count is the Arduino's open-loop step count at the crossing
-        (should be ~0 in WAVE mode); |count| is the drift that just got
-        corrected, useful for monitoring. The firmware deliberately did NOT
-        reset its own count (that would stop the motor), so its next POS
-        will still report the drifted count -- fine, in WAVE that count is
-        near 0 anyway, and CONSTANT/DIRECTION don't use actual_pos.
+        firmware_count is the Arduino's open-loop step count at the crossing.
+        The firmware deliberately did NOT reset its own count (that would
+        stop the motor). In WAVE the count stays near 0; in CONSTANT/
+        DIRECTION it climbs by STEPS_PER_REV each revolution, so at a
+        crossing it's a whole-revolution multiple plus the real drift. The
+        true drift is therefore the signed remainder within one revolution,
+        NOT the raw count -- e.g. 1601 -> +1, 3203 -> +3, 1599 -> -1.
         """
-        self.actual_pos[motor_id] = 0
+        half = STEPS_PER_REV // 2
+        drift = ((firmware_count + half) % STEPS_PER_REV) - half
+        # Anchor to the nearest clean revolution multiple. In WAVE that's 0
+        # (count near 0); in continuous rotation it matches the climbing POS
+        # frame instead of flickering against it.
+        self.actual_pos[motor_id] = firmware_count - drift
         self._updateStateTable(motor_id)
-        if abs(firmware_count) > 0:
-            self.LogEvent(f"Motor {motor_id} zero-cross; drift corrected {firmware_count}")
+        if drift != 0:
+            self.LogEvent(f"Motor {motor_id} zero-cross; drift corrected {drift}")
 
     def OnFault(self, motor_id, code):
         """Records fault. On TIMEOUT, marks the motor not homed."""
@@ -235,7 +246,7 @@ class MotorControllerEXT:
         for i in range(NUM_MOTORS):
             self.homed[i] = False
             self.homing[i] = True
-            self.speed_mode[i] = False   # homing leaves speed mode (mirrors firmware)
+            #self.speed_mode[i] = False   # homing leaves speed mode (mirrors firmware)
         self.GetSerialEXT(0).SendHomeAll()
         self.GetSerialEXT(7).SendHomeAll()
         self.LogEvent("HOMEALL sent to both Megas")
