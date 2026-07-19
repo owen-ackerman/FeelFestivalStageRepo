@@ -184,6 +184,12 @@ class MotorControllerEXT:
         self.homing[motor_id] = False
         self.actual_pos[motor_id] = 0
         self.ideal_pos[motor_id] = 0
+        # Firmware zeroed this motor's speed when it homed. Reset our
+        # SetSpeed change-detection cache to match, or the next SetSpeed with
+        # the pre-home value would be suppressed as "unchanged" and never
+        # reach the now-stopped firmware -- i.e. motors that won't restart
+        # after homing.
+        self.motor_speed[motor_id] = 0
         self.faults[motor_id] = None
         self.LogEvent(f"Motor {motor_id} HOMED")
         self._updateStateTable(motor_id)

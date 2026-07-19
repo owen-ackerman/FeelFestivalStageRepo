@@ -15,7 +15,12 @@ dats/choreo_speed_execute.py.
 
 Three modes (custom parameter Mode: CONSTANT | DIRECTION | WAVE):
 
-  CONSTANT   every motor spins at the same Basespeed (steps/sec, signed).
+  CONSTANT   every motor spins at Basespeed (steps/sec, signed). If
+             Constphaseoffset is 0 this is a plain open-loop spin. If it's
+             nonzero, each motor is held a fixed angular offset from its
+             neighbours (per the phase pattern) using position feedback --
+             so the group spins as a staggered fan / spiral rather than in
+             unison. See _updateConstant.
 
   DIRECTION  every motor spins at |Basespeed| but its own direction, from a
              per-motor sign. Signs come from a 'direction' CHOP (channel i,
@@ -32,19 +37,25 @@ Three modes (custom parameter Mode: CONSTANT | DIRECTION | WAVE):
              needed. Only WAVE uses feedback; CONSTANT/DIRECTION are meant to
              spin freely and stay pure open-loop.
 
-Phase pattern (custom parameter Phasepattern: LINEAR | SYMMETRIC):
-  LINEAR     phase_i = Wavephaseoffset * i           (wave travels 0 -> 13)
-  SYMMETRIC  phase_i = Wavephaseoffset * dist_from_center(i)
-             (wave emanates from center 6&7 outward to the ends 0&13)
+Phase pattern (custom parameter Phasepattern: LINEAR | SYMMETRIC) -- shared
+by WAVE and staggered CONSTANT:
+  LINEAR     multiplier = motor index i (pattern travels motor 0 -> 13).
+  SYMMETRIC  multiplier = distance from center. Two mirror groups: motors
+             6 & 7 (0-indexed; "7 & 8" counting from 1) are the center,
+             multiplier 0. It increases outward symmetrically, so these
+             pairs share a value: 5&8, 4&9, 3&10, 2&11, 1&12, and the outer
+             ends 0&13 (multiplier 6). See DIST_FROM_CENTER.
 
 Custom parameters on the owning COMP:
     Mode            menu    CONSTANT | DIRECTION | WAVE
     Basespeed       float   steps/sec, signed -- CONSTANT/DIRECTION speed
+    Constphaseoffset float  steps per pattern step -- CONSTANT angular stagger
+                            between motors (0 = unison open-loop spin)
     Waveamp         float   steps -- WAVE peak position swing
     Wavefreq        float   Hz -- WAVE oscillation rate
-    Wavephaseoffset float   radians per position step -- WAVE spatial phase
+    Wavephaseoffset float   radians per pattern step -- WAVE spatial phase
     Phasepattern    menu    LINEAR | SYMMETRIC
-    Wavekp          float   position-correction gain for WAVE (0 = open-loop)
+    Wavekp          float   position-correction gain (WAVE + staggered CONSTANT; 0 = open-loop)
     Playback        toggle  enable/disable output
 
 Optional child operator:
@@ -93,12 +104,7 @@ class ChoreographySpeedEXT:
         controller = self._motorController()
 
         if mode == 'CONSTANT':
-            speed = self.ownerComp.par.Basespeed.eval()
-            for i in range(NUM_MOTORS):
-                if controller.homing[i]:
-                    continue   # don't override an in-progress home -- its per-frame
-                               # SETSPEED would cancel homing_active on the firmware
-                controller.SetSpeed(i, speed)
+            self._updateConstant(controller)
 
         elif mode == 'DIRECTION':
             mag = abs(self.ownerComp.par.Basespeed.eval())
@@ -111,6 +117,38 @@ class ChoreographySpeedEXT:
 
         elif mode == 'WAVE':
             self._updateWave(controller)
+
+    def _updateConstant(self, controller):
+        speed = self.ownerComp.par.Basespeed.eval()
+        phase_step = self.ownerComp.par.Constphaseoffset.eval()
+
+        # No stagger -> pure open-loop constant spin (simplest, most robust).
+        if phase_step == 0:
+            for i in range(NUM_MOTORS):
+                if controller.homing[i]:
+                    continue   # don't override an in-progress home -- its per-frame
+                               # SETSPEED would cancel homing_active on the firmware
+                controller.SetSpeed(i, speed)
+            return
+
+        # Staggered spin: hold each motor a fixed angular offset from its
+        # neighbours (per the LINEAR/SYMMETRIC pattern) while all rotate at
+        # base speed. Instead of tracking an absolute position ramp (which
+        # would need an unbounded accumulator and a start-up alignment step),
+        # drive the RELATIVE quantity (actual_i - offset_i) toward the group
+        # mean. When every motor's (actual - offset) is equal, the offsets
+        # are exactly held; if one slips, its term diverges and it's pulled
+        # back -- self-correcting, bounded, no accumulator, no init.
+        kp = self.ownerComp.par.Wavekp.eval()
+        active = [i for i in range(NUM_MOTORS) if not controller.homing[i]]
+        if not active:
+            return
+        offset = {i: phase_step * self._phaseMultiplier(i) for i in active}
+        adjusted = {i: controller.actual_pos[i] - offset[i] for i in active}
+        mean_adj = sum(adjusted.values()) / len(active)
+        for i in active:
+            error = mean_adj - adjusted[i]
+            controller.SetSpeed(i, speed + kp * error)
 
     def _updateWave(self, controller):
         # Advance the shared phase accumulator by this frame's elapsed time.
@@ -142,11 +180,18 @@ class ChoreographySpeedEXT:
 
     # -- helpers -------------------------------------------------------
 
-    def _phase(self, motor_index):
-        offset = self.ownerComp.par.Wavephaseoffset.eval()
+    def _phaseMultiplier(self, motor_index):
+        """Raw spatial pattern multiplier for motor_index: its own index
+        (LINEAR, wave travels 0->13) or its distance from center (SYMMETRIC,
+        emanates from motors 6&7 out to 0&13). Scaled by the mode's offset
+        param -- Wavephaseoffset (radians) for WAVE, Constphaseoffset (steps)
+        for CONSTANT."""
         if self.ownerComp.par.Phasepattern.eval() == 'SYMMETRIC':
-            return offset * DIST_FROM_CENTER[motor_index]
-        return offset * motor_index  # LINEAR
+            return DIST_FROM_CENTER[motor_index]
+        return motor_index  # LINEAR
+
+    def _phase(self, motor_index):
+        return self.ownerComp.par.Wavephaseoffset.eval() * self._phaseMultiplier(motor_index)
 
     def _chanSign(self, chop, motor_index):
         """+1 / -1 from channel motor_index of a direction CHOP; +1 if the
