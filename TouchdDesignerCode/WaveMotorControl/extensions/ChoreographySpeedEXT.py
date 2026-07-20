@@ -80,6 +80,10 @@ DIST_FROM_CENTER = [
     6, 5, 4, 3, 2, 1, 0,   # LEFT:  0-6
     0, 1, 2, 3, 4, 5, 6,   # RIGHT: 7-13
 ]
+SYMM_SIGN = [
+    -1, -1, -1, -1, -1, -1, -1,   # LEFT:  0-6
+    1, 1, 1, 1, 1, 1, 1,   # RIGHT: 7-13
+]
 
 
 class ChoreographySpeedEXT:
@@ -110,7 +114,7 @@ class ChoreographySpeedEXT:
             mag = abs(self.ownerComp.par.Basespeed.eval())
             direction = self.ownerComp.op('direction')
             for i in range(NUM_MOTORS):
-                if controller.homing[i]:
+                if controller.IsHoming(i):
                     continue
                 sign = self._chanSign(direction, i)
                 controller.SetSpeed(i, sign * mag)
@@ -125,7 +129,7 @@ class ChoreographySpeedEXT:
         # No stagger -> pure open-loop constant spin (simplest, most robust).
         if phase_step == 0:
             for i in range(NUM_MOTORS):
-                if controller.homing[i]:
+                if controller.IsHoming(i):
                     continue   # don't override an in-progress home -- its per-frame
                                # SETSPEED would cancel homing_active on the firmware
                 controller.SetSpeed(i, speed)
@@ -140,7 +144,7 @@ class ChoreographySpeedEXT:
         # are exactly held; if one slips, its term diverges and it's pulled
         # back -- self-correcting, bounded, no accumulator, no init.
         kp = self.ownerComp.par.Wavekp.eval()
-        active = [i for i in range(NUM_MOTORS) if not controller.homing[i]]
+        active = [i for i in range(NUM_MOTORS) if not controller.IsHoming(i)]
         if not active:
             return
         offset = {i: phase_step * self._phaseMultiplier(i) for i in active}
@@ -160,23 +164,28 @@ class ChoreographySpeedEXT:
         dt = now - self._last_time
         self._last_time = now
         if dt < 0 or dt > MAX_DT:
-            dt = 0.0
+            dt = 0.0 # or MAX_DT?
 
         freq = self.ownerComp.par.Wavefreq.eval()
         w = 2.0 * math.pi * freq
         self._phase_accum += w * dt
-
+       
         amp = self.ownerComp.par.Waveamp.eval() / 10
         kp = self.ownerComp.par.Wavekp.eval()
 
         for i in range(NUM_MOTORS):
-            if controller.homing[i]:
+            if controller.IsHoming(i):
                 continue   # don't override an in-progress home
+            if self.ownerComp.par.Phasepattern.eval() == 'SYMMETRIC':
+                ampTemp = amp * SYMM_SIGN[i]
+            else: 
+                ampTemp = amp
             phase = self._phase_accum + self._phase(i)
-            desired = amp * math.sin(phase)          # where motor i should be
-            feedforward = amp * w * math.cos(phase)  # d/dt of desired (uses current freq)
+            desired = ampTemp * math.sin(phase)          # where motor i should be
+            feedforward = ampTemp * w * math.cos(phase)  # d/dt of desired (uses current freq)
             error = desired - controller.actual_pos[i]
             controller.SetSpeed(i, feedforward + kp * error)
+            controller.SetSpeedPos(i,desired)
 
     # -- helpers -------------------------------------------------------
 

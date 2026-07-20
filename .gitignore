@@ -7,6 +7,12 @@ Stage3DFiles/
 *.mtl
 *.3dm
 
+# TouchDesigner .toe project files -- binaries that balloon to 100s of MB
+# once geometry/media is imported (WaveMotorController.toe hit 172MB). The
+# version-controlled source is the Python in extensions/ and dats/; the .toe
+# lives on disk / OneDrive, not git.
+*.toe
+
 # TouchDesigner autosave backup increments
 **/Backup/
 

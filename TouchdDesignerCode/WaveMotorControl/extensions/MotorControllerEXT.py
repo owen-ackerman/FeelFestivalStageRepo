@@ -41,6 +41,13 @@ NUM_MOTORS = 14
 # multiple, so the real per-rev drift is the remainder (see OnZeroCross).
 STEPS_PER_REV = 1600
 
+# TD-side homing watchdog. If a motor's homing flag is set but no HOMED/FAULT
+# reply arrives within this many seconds, clear it automatically (see
+# IsHoming) -- a lost reply (link drop, offline test) must never leave the
+# choreography's homing-skip guard blocking the motor forever. Must exceed
+# the firmware's HOMING_TIMEOUT_MS (15s) plus reply latency.
+HOMING_TIMEOUT_S = 20.0
+
 
 class MotorControllerEXT:
     def __init__(self, ownerComp):
@@ -50,6 +57,7 @@ class MotorControllerEXT:
         self.actual_pos = [0] * NUM_MOTORS    # steps — received from Mega (monitoring only)
         self.homed      = [False] * NUM_MOTORS
         self.homing     = [False] * NUM_MOTORS
+        self._homing_start = [0.0] * NUM_MOTORS   # absTime when each home began, for the watchdog
         self.faults     = [None] * NUM_MOTORS
 
         # Continuous-rotation (SETSPEED) tracking, mirroring the firmware's
@@ -61,6 +69,7 @@ class MotorControllerEXT:
         # stale, so the drift check would otherwise fire a spurious re-home
         # almost immediately).
         self.motor_speed = [0] * NUM_MOTORS   # signed steps/sec last sent via SETSPEED
+        self.motor_speed_pos = [0] * NUM_MOTORS   # signed steps/sec last sent via SETSPEED
         self.speed_mode  = [False] * NUM_MOTORS
 
     # -- logging -------------------------------------------------------
@@ -121,6 +130,25 @@ class MotorControllerEXT:
             return
         self.motor_speed[motor_id] = steps_per_sec
         self.GetSerialEXT(motor_id).SendSetSpeed(motor_id, steps_per_sec)
+        self._updateStateTable(motor_id)
+
+    def SetSpeedPos(self, motor_id, pos):
+        """
+        Put one motor into continuous-rotation mode at a signed speed
+        (steps/sec; sign = direction, 0 = stop but stay in speed mode).
+        Only sends SETSPEED when the value actually changes, so this is safe
+        to call every frame from a live slider / audio CHOP. Mutually
+        exclusive with position mode -- mirrors the firmware.
+        """
+        
+        
+        if self.motor_speed_pos[motor_id] == pos:
+            return
+        self.motor_speed_pos[motor_id] = pos
+        self._updateStateTable(motor_id)
+
+
+
 
     def SetMaxSpeed(self, value, motor_id=None):
         """
@@ -247,11 +275,27 @@ class MotorControllerEXT:
 
     # -- motion / homing / stop -----------------------------------------
 
+    def _homingDisabled(self):
+        """Debug switch: custom parameter 'Disablehoming' (Toggle) on this
+        COMP. When on, HomeAll/HomeMotor are suppressed -- no serial send AND
+        no homing[] flags set. That matters because a set homing[] flag is
+        only cleared by a HOMED/FAULT reply; with no rig connected the reply
+        never comes, the flags stick True, and ChoreographySpeedEXT's
+        homing-skip guard then blocks EVERY motor (sequencer and manual
+        control alike). This switch lets you drive the choreography offline.
+        Defensive getattr so it works whether or not the param exists yet."""
+        par = getattr(self.ownerComp.par, 'Disablehoming', None)
+        return bool(par.eval()) if par is not None else False
+
     def HomeAll(self):
         """Send HOMEALL to both Megas. Reset all homed flags locally."""
+        if self._homingDisabled():
+            self.LogEvent("HOMEALL suppressed (Disablehoming debug switch is ON)")
+            return
         for i in range(NUM_MOTORS):
             self.homed[i] = False
             self.homing[i] = True
+            self._homing_start[i] = absTime.seconds
             #self.speed_mode[i] = False   # homing leaves speed mode (mirrors firmware)
         self.GetSerialEXT(0).SendHomeAll()
         self.GetSerialEXT(7).SendHomeAll()
@@ -259,11 +303,33 @@ class MotorControllerEXT:
 
     def HomeMotor(self, motor_id):
         """Send HOME for one motor."""
+        if self._homingDisabled():
+            self.LogEvent(f"HOME {motor_id} suppressed (Disablehoming debug switch is ON)")
+            return
         self.homed[motor_id] = False
         self.homing[motor_id] = True
+        self._homing_start[motor_id] = absTime.seconds
         self.speed_mode[motor_id] = False   # homing leaves speed mode (mirrors firmware)
         self.GetSerialEXT(motor_id).SendHome(motor_id)
         self.LogEvent(f"HOME sent for motor {motor_id}")
+
+    def IsHoming(self, motor_id):
+        """True while motor_id is homing -- but SELF-CLEARS if no HOMED/FAULT
+        reply arrived within HOMING_TIMEOUT_S. Callers (the choreography's
+        homing-skip guard) should use this instead of reading self.homing[]
+        directly, so a lost reply can't freeze the rig forever."""
+        if self.homing[motor_id] and (absTime.seconds - self._homing_start[motor_id]) > HOMING_TIMEOUT_S:
+            self.homing[motor_id] = False
+            self.LogEvent(f"Motor {motor_id} homing watchdog fired (no HOMED/FAULT in "
+                          f"{HOMING_TIMEOUT_S:.0f}s) -- flag cleared so motion can resume")
+        return self.homing[motor_id]
+
+    def ClearHoming(self, motor_id=None):
+        """Manually clear stuck homing flag(s) -- immediate un-block after a
+        lost home reply. motor_id=None clears all 14."""
+        for i in (range(NUM_MOTORS) if motor_id is None else [motor_id]):
+            self.homing[i] = False
+        self.LogEvent(f"Homing flag(s) cleared: {'all' if motor_id is None else motor_id}")
 
     def StopAll(self):
         """
@@ -413,6 +479,9 @@ class MotorControllerEXT:
                                self.ideal_pos[motor_id] - self.actual_pos[motor_id])
         self._writeChopChannel('ideal_chop', motor_id, self.ideal_pos[motor_id])
         self._writeChopChannel('actual_chop', motor_id, self.actual_pos[motor_id])
+        self._writeChopChannel('speed_chop', motor_id, self.motor_speed[motor_id])
+        self._writeChopChannel('speed_pos_chop', motor_id, self.motor_speed_pos[motor_id])
+
 
     def _writeChopChannel(self, chop_name, motor_id, value):
         chop = self.ownerComp.op(chop_name)
@@ -443,6 +512,7 @@ class MotorControllerEXT:
              flagged as faulted for manual retry rather than aborting.
           9. Activate default cue via ChoreographyEXT
         """
+        
         self.LogEvent("Startup initiated")
         self.GetSerialEXT(0).Connect()
         self.GetSerialEXT(7).Connect()
@@ -495,11 +565,12 @@ class MotorControllerEXT:
         run("args[0]._awaitHomed()", self, delayMilliSeconds=250)
 
     def _startupActivateDefaultCue(self):
-        choreo = self.ownerComp.parent().op('base_choreography')
+        choreo = self.ownerComp.parent().op('base_choreography_speed')
+        debug(choreo)
         if choreo is None:
-            self.LogEvent("Startup: base_choreography not found — skipping default cue")
+            self.LogEvent("Startup: base_choreography_speed not found — skipping default cue")
             return
-        choreo.ext.ChoreographyEXT.GoCue(0)
+        choreo.ext.ChoreographySpeedEXT.GoCue(0)
 
     # -- bench testing -------------------------------------------------
 

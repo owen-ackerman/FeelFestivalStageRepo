@@ -1,0 +1,7 @@
+time_start	duration	behavior	params_start	params_end
+0	5	home	Wavekp=0	
+5	10	CONSTANT	Basespeed=400 Constphaseoffset=0	
+15	10	DIRECTION	Basespeed=400	
+25	5	home		
+30	10	WAVE	Waveamp=500 Wavefreq=0.3 Wavephaseoffset=0.4 Wavekp=0 Phasepattern=SYMMETRIC	
+40	10	WAVE	Waveamp=5000 Wavefreq=0.3 Wavephaseoffset=0.4 Wavekp=0 Phasepattern=SYMMETRIC	
